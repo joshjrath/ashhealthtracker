@@ -8,7 +8,7 @@ import {
   METRICS, GOAL_IDS, addDays, parseKey, range, mondayOf,
   goalMet, dayScore, streak, valueOf, average, weightSeries, goalProgress,
   weeklyWeight, macroCalories, sleepMinutes, nightOffset,
-  fmtInt, fmt1, fmtK, fmtDur, fmtClock,
+  fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
 import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline } from "./charts.js";
 
@@ -73,7 +73,7 @@ export function pageHeader(ctx, title, withGoals = true) {
 export function demoBanner(ctx) {
   if (!ctx.state.demo || ctx.ui.demoHidden) return "";
   return `<div class="banner">
-    <span><b>Sample data.</b> Four months of made-up days so every chart has something to show.</span>
+    <span><b>Sample data.</b> Made-up days so every chart has something to show, until your first Apple Health sync or log.</span>
     <button type="button" class="btn" data-act="demo-hide">Keep exploring</button>
     <button type="button" class="btn light" data-act="demo-clear">Start my own log</button>
   </div>`;
@@ -551,15 +551,52 @@ export function settings(ctx) {
       <div class="checks">${checks}</div>
       <div class="actions"><button class="btn primary" type="submit">Save goals</button><span class="saved" id="savedmsg" hidden>Saved</span></div>
     </form>
+    ${appleCard(ctx)}
     <section class="card settings">
       <h2>Your data</h2>
-      <p class="hint">${n} day${n === 1 ? "" : "s"} logged${ctx.state.demo ? " (sample data)" : ""}. Everything lives in this browser — export a copy to move it or keep a backup.</p>
+      <p class="hint">${ctx.state.demo ? "Showing sample days — nothing is stored yet." : `${n} day${n === 1 ? "" : "s"} stored on the server.`} Export a copy any time to keep a backup.</p>
       <div class="actions">
         <button type="button" class="btn" data-act="export">Export JSON</button>
         <label class="btn">Import JSON<input type="file" accept="application/json,.json" id="importfile" hidden></label>
-        ${ctx.state.demo ? `<button type="button" class="btn light" data-act="demo-clear">Clear sample data</button>` : `<button type="button" class="btn danger" data-act="reset">Erase all days</button>`}
+        ${ctx.state.demo ? `<button type="button" class="btn light" data-act="demo-clear">Hide sample data</button>` : `<button type="button" class="btn danger" data-act="reset">Erase all days</button>`}
       </div>
-    </section>`;
+    </section>
+    ${ctx.state.open ? "" : `<form method="post" action="/logout" class="signout"><button class="btn" type="submit">Sign out</button></form>`}`;
+}
+
+/** Where Apple Health data comes from, and whether it's arriving. */
+function appleCard(ctx) {
+  const s = ctx.state.lastSync;
+  const url = `${location.origin}/api/ingest`;
+  const status = s?.at
+    ? `<div class="sync ok"><span class="dot"></span><div><b>Last sync ${esc(ago(new Date(s.at)))}</b>
+        <span>${esc(s.source || "Apple Health")} · ${s.days} day${s.days === 1 ? "" : "s"} updated${s.from ? ` (${esc(fmtDay(s.from, true))}${s.to !== s.from ? ` – ${esc(fmtDay(s.to, true))}` : ""})` : ""}</span></div></div>`
+    : `<div class="sync"><span class="dot"></span><div><b>No sync yet</b><span>Set up the iPhone side below, then run it once.</span></div></div>`;
+  return `<section class="card settings apple">
+    <h2>Apple Health</h2>
+    ${status}
+    <p class="hint">Your Apple Watch saves to Apple Health on your iPhone. An app on the phone then sends it here. Steps, weight, sleep and workouts fill in automatically, and so do calories and macros if your food app writes to Apple Health. Creatine and anything you type in yourself stay as they are.</p>
+    <div class="field"><span>Upload URL</span>
+      <div class="urlrow"><code>${esc(url)}</code><button type="button" class="btn" data-act="copy-url" data-v="${esc(url)}">Copy</button></div>
+    </div>
+    <details class="howto"><summary>Set up Health Auto Export (recommended)</summary>
+      <ol>
+        <li>Install <b>Health Auto Export – JSON+CSV</b> on your iPhone and allow it to read Health.</li>
+        <li>Automations → New → <b>REST API</b>. URL: the upload URL above. Add a header named <code>Authorization</code> with the value <code>Bearer</code>, a space, then your <code>INGEST_TOKEN</code>.</li>
+        <li>Data type <b>Health Metrics</b>: Step Count, Weight &amp; Body Mass, Dietary Energy, Protein, Carbohydrates, Total Fat, Fiber, Sleep Analysis. Add a second automation for <b>Workouts</b>.</li>
+        <li>Export format <b>JSON</b>, Aggregate data <b>on</b>, Summarize by <b>Day</b>, date range <b>Last 7 days</b>, sync every hour.</li>
+        <li>Tap <b>Manual export</b> once with a long date range to backfill your history.</li>
+      </ol>
+    </details>
+    <details class="howto"><summary>Or use a free iOS Shortcut</summary>
+      <ol>
+        <li>Shortcuts → New shortcut. Add <b>Find Health Samples</b> for each metric (e.g. Steps, today, summed).</li>
+        <li>Add a <b>Dictionary</b>: <code>date</code> = today as <code>yyyy-MM-dd</code>, then <code>steps</code>, <code>weight</code>, <code>kcal</code>, <code>protein</code>, <code>carbs</code>, <code>fat</code>, <code>fiber</code>, <code>sleepMins</code>, <code>workout</code>.</li>
+        <li><b>Get Contents of URL</b>: the upload URL, Method POST, header <code>Authorization: Bearer …</code>, Request Body JSON = the dictionary.</li>
+        <li>Automation → Time of Day (e.g. 9pm daily) → run the shortcut.</li>
+      </ol>
+    </details>
+  </section>`;
 }
 
 /* ── pages ─────────────────────────────────────────────────────────────── */

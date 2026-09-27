@@ -1,47 +1,50 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   The log lives in this browser's localStorage. A first visit is seeded with
-   four months of sample days so every chart has something to draw; the
-   banner on the page clears it the moment you want to start logging for real.
+   The log lives on the server (Postgres on Railway). Apple Health lands
+   there through /api/ingest; this file is the page's side of the API.
+
+   Until the first real day arrives, the page shows four months of sample
+   days so every chart has something to draw. They are never saved.
    ────────────────────────────────────────────────────────────────────────── */
-import { DEFAULT_GOALS, addDays, keyOf } from "./metrics.js";
+import { DEFAULT_GOALS, addDays } from "./metrics.js";
 
-const KEY = "ash-health-v1";
-
-export function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const s = JSON.parse(raw);
-      if (s && typeof s === "object" && s.days) {
-        return { demo: !!s.demo, goals: { ...DEFAULT_GOALS, ...s.goals }, days: s.days };
-      }
-    }
-  } catch {
-    /* private window or corrupt value — fall through to a fresh seed */
+async function call(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    location.href = "/login";
+    throw new Error("Signed out");
   }
-  return seed(keyOf(new Date()));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Server said ${res.status}`);
+  return data;
 }
 
-export function save(state) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** { days, goals, lastSync, storage, open } */
+export const fetchState = () => call("GET", "/api/state");
 
-/** A blank log that keeps your goals. */
-export function blank(goals = DEFAULT_GOALS) {
-  return { demo: false, goals: { ...goals }, days: {} };
-}
+export const api = {
+  putDay: (key, day) => call("PUT", `/api/days/${key}`, day),
+  deleteDay: (key) => call("DELETE", `/api/days/${key}`),
+  eraseDays: () => call("DELETE", "/api/days"),
+  putGoals: (goals) => call("PUT", "/api/goals", goals),
+  importAll: (doc) => call("POST", "/api/import", doc),
+};
 
-/** Accept a previously exported file, or refuse it. */
-export function fromImport(text) {
+/** Check a file before sending it: it must look like an export. */
+export function readExport(text) {
   const s = JSON.parse(text);
-  if (!s || typeof s !== "object" || typeof s.days !== "object") throw new Error("Not an Ash Health export");
-  return { demo: false, goals: { ...DEFAULT_GOALS, ...s.goals }, days: s.days };
+  if (!s || typeof s !== "object" || typeof s.days !== "object" || Array.isArray(s.days)) throw new Error("Not an Ash Health export");
+  return { days: s.days, goals: { ...DEFAULT_GOALS, ...s.goals } };
 }
+
+/* A per-browser choice, not data: "don't show me the sample days". */
+const NODEMO = "ash-health-nodemo";
+export const demoDismissed = () => { try { return localStorage.getItem(NODEMO) === "1"; } catch { return false; } };
+export const dismissDemo = () => { try { localStorage.setItem(NODEMO, "1"); } catch { /* fine */ } };
 
 /* ── sample data ───────────────────────────────────────────────────────── */
 

@@ -2,13 +2,19 @@
    Routing, the log dialog, tooltips and chart sizing. Pages are pure
    functions of the context; everything here just decides when to draw.
    ────────────────────────────────────────────────────────────────────────── */
-import { keyOf, DEFAULT_GOALS, GOAL_IDS } from "./metrics.js";
-import { load, save, blank, fromImport } from "./store.js";
+import { keyOf, ago, DEFAULT_GOALS, GOAL_IDS } from "./metrics.js";
+import { fetchState, api, readExport, seed, demoDismissed, dismissDemo } from "./store.js";
 import { PAGES, CHARTS, fmtDay } from "./views.js";
 import { esc } from "./charts.js";
 
-let state = load();
-save(state);
+/* state = { days, goals, lastSync, open, demo } — days are sample days while demo is on */
+let state = { days: {}, goals: { ...DEFAULT_GOALS }, lastSync: null, open: false, demo: false };
+
+async function refresh() {
+  const s = await fetchState();
+  const demo = !Object.keys(s.days).length && !demoDismissed();
+  state = { ...s, demo, days: demo ? seed(keyOf(new Date())).days : s.days };
+}
 
 const UI_KEY = "ash-health-ui";
 const ui = {
@@ -39,6 +45,16 @@ function render() {
   mountCharts(c);
   animateJourney();
   bindSettings();
+  syncPill();
+}
+
+/** The rail's status line: when Apple Health last reached the server. */
+function syncPill() {
+  const el = document.getElementById("syncpill");
+  if (!el) return;
+  const at = state.lastSync?.at ? new Date(state.lastSync.at) : null;
+  el.querySelector("span:last-child").textContent = at ? `Apple Health · ${ago(at)}` : "Apple Health not synced yet";
+  el.classList.toggle("stale", !at || Date.now() - at > 36 * 3600 * 1000);
 }
 
 function mountCharts(c = ctx()) {
@@ -76,9 +92,27 @@ new ResizeObserver(() => {
   }, 80);
 }).observe(view);
 
-function commit() {
-  save(state);
+/**
+ * Draw the change now, send it, and if the server refuses, say so and
+ * redraw from what the server actually holds.
+ */
+async function commit(send) {
   render();
+  try {
+    await send();
+  } catch (err) {
+    if (err.message === "Signed out") return;
+    alert(`Couldn't save: ${err.message}`);
+    await refresh().catch(() => {});
+    render();
+  }
+}
+
+/** A first real save replaces the sample days rather than joining them. */
+function leaveDemo() {
+  if (!state.demo) return;
+  state.demo = false;
+  state.days = {};
 }
 
 /* ── tooltip ───────────────────────────────────────────────────────────── */
@@ -117,18 +151,24 @@ const ACTS = {
   heat: (el) => { const v = Number(el.dataset.v); ui.heatWeek = v === 0 ? 0 : Math.min(0, ui.heatWeek + v); },
   cal: (el) => { const v = Number(el.dataset.v); ui.calMonth = v === 0 ? 0 : Math.min(0, ui.calMonth + v); },
   "demo-hide": () => { ui.demoHidden = true; },
+  "copy-url": (el) => {
+    navigator.clipboard?.writeText(el.dataset.v).then(() => { el.textContent = "Copied"; });
+    return false;
+  },
   "demo-clear": () => {
-    if (!confirm("Clear the sample days and start an empty log? Your goals stay.")) return false;
-    state = blank(state.goals);
-    save(state);
+    dismissDemo();
+    leaveDemo();
   },
   reset: () => {
-    if (!confirm("Erase every logged day in this browser? Export first if you want a copy.")) return false;
-    state = blank(state.goals);
-    save(state);
+    if (!confirm("Erase every logged day, including Apple Health's? Export first if you want a copy.")) return false;
+    state.days = {};
+    commit(() => api.eraseDays());
+    return false;
   },
   export: () => {
-    const blob = new Blob([JSON.stringify({ ...state, exportedAt: new Date().toISOString() }, null, 2)], { type: "application/json" });
+    if (state.demo) { alert("Nothing to export yet — these are sample days."); return false; }
+    const doc = { days: state.days, goals: state.goals, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `ash-health-${keyOf(new Date())}.json`;
@@ -201,28 +241,37 @@ form.addEventListener("submit", (e) => {
   e.preventDefault();
   const key = form.elements.date.value;
   if (!key) return;
-  const d = {};
+  leaveDemo();
+  // Start from what's stored so fields the form doesn't show (Apple's
+  // measured sleep time) survive an edit to something else.
+  const before = state.days[key] || {};
+  const d = { ...before };
   for (const n of NUMS) {
     const raw = form.elements[n].value.trim();
-    if (raw !== "") d[n] = n === "weight" ? Math.round(Number(raw) * 10) / 10 : Math.round(Number(raw));
+    if (raw === "") delete d[n];
+    else d[n] = n === "weight" ? Math.round(Number(raw) * 10) / 10 : Math.round(Number(raw));
   }
-  if (form.elements.bed.value && form.elements.wake.value) {
-    d.bed = form.elements.bed.value;
-    d.wake = form.elements.wake.value;
+  const bed = form.elements.bed.value, wake = form.elements.wake.value;
+  if (bed && wake) {
+    if (bed !== before.bed || wake !== before.wake) delete d.sleepMins; // hand-edited: time in bed it is
+    d.bed = bed;
+    d.wake = wake;
+  } else {
+    delete d.bed; delete d.wake; delete d.sleepMins;
   }
   d.workout = form.elements.workout.checked;
   d.creatine = form.elements.creatine.checked;
   state.days[key] = d;
   dlg.close();
-  commit();
+  commit(() => api.putDay(key, d));
 });
 
 document.getElementById("logdelete").addEventListener("click", () => {
   const key = form.elements.date.value;
-  if (!state.days[key] || !confirm(`Remove everything logged for ${fmtDay(key)}?`)) return;
+  if (state.demo || !state.days[key] || !confirm(`Remove everything logged for ${fmtDay(key)}?`)) return;
   delete state.days[key];
   dlg.close();
-  commit();
+  commit(() => api.deleteDay(key));
 });
 
 /* ── settings ──────────────────────────────────────────────────────────── */
@@ -241,9 +290,10 @@ function bindSettings() {
       if (next.kcalLow > next.kcalHigh) [next.kcalLow, next.kcalHigh] = [next.kcalHigh, next.kcalLow];
       next.tracked = [...gf.querySelectorAll("input[name=tracked]:checked")].map((i) => i.value).filter((id) => GOAL_IDS.includes(id));
       state.goals = next;
-      commit();
-      const m = document.getElementById("savedmsg");
-      if (m) m.hidden = false;
+      commit(() => api.putGoals(next)).then(() => {
+        const m = document.getElementById("savedmsg");
+        if (m) m.hidden = false;
+      });
     });
   }
   const file = document.getElementById("importfile");
@@ -252,10 +302,11 @@ function bindSettings() {
       const f = file.files[0];
       if (!f) return;
       try {
-        const next = fromImport(await f.text());
-        if (!confirm(`Replace this browser's log with ${Object.keys(next.days).length} imported days?`)) return;
-        state = next;
-        commit();
+        const next = readExport(await f.text());
+        if (!confirm(`Replace every stored day with the ${Object.keys(next.days).length} days in this file?`)) return;
+        await api.importAll(next);
+        await refresh();
+        render();
       } catch (err) {
         alert(`Couldn't import that file: ${err.message}`);
       }
@@ -263,4 +314,15 @@ function bindSettings() {
   }
 }
 
-render();
+try {
+  await refresh();
+} catch (err) {
+  if (err.message !== "Signed out") view.innerHTML = `<div class="banner"><span><b>Couldn't reach the server.</b> ${esc(err.message)}</span></div>`;
+}
+if (!view.firstElementChild) render();
+
+// Pick up Apple Health syncs that land while the page is open.
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || dlg.open) return;
+  try { await refresh(); render(); } catch { /* keep what's on screen */ }
+});

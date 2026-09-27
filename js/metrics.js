@@ -4,7 +4,8 @@
 
    A day is keyed "YYYY-MM-DD" in local time and holds whatever was logged:
      { weight, kcal, protein, carbs, fat, fiber, steps, bed, wake,
-       workout, creatine }
+       sleepMins, workout, creatine }
+   sleepMins is Apple's measured time asleep; without it, sleep is bed → wake.
    Sleep belongs to the morning you woke up: `bed` is the night before.
    ────────────────────────────────────────────────────────────────────────── */
 
@@ -91,8 +92,10 @@ export function nightOffset(hhmm) {
   return mins >= 1200 ? mins - 1200 : mins + 240;
 }
 
+/** Apple's measured time asleep when it sent one, otherwise bedtime → wake. */
 export function sleepMinutes(day) {
   if (!day) return null;
+  if (typeof day.sleepMins === "number" && day.sleepMins > 0) return day.sleepMins;
   const bed = nightOffset(day.bed);
   const wake = nightOffset(day.wake);
   if (bed == null || wake == null) return null;
@@ -251,4 +254,14 @@ export function fmtClock(offset) {
   const h = Math.floor(mins / 60), m = mins % 60;
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${String(m).padStart(2, "0")}${h < 12 ? "a" : "p"}`;
+}
+
+/** "12m ago" for a Date. */
+export function ago(date) {
+  const m = Math.round((Date.now() - date) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 36) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
 }
