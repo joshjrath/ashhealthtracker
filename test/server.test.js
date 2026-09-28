@@ -15,7 +15,7 @@ before(async () => {
   // TEST_DATABASE_URL runs the same checks against a real Postgres.
   store = await openStore({ databaseUrl: process.env.TEST_DATABASE_URL, file: join(dir, "db.json") });
   await store.replaceDays({});
-  server = createApp({ store, root, password: "hunter2", secret: "s".repeat(32), ingestToken: "tok123", requireAuth: true });
+  server = await createApp({ store, root, password: "hunter2", secret: "s".repeat(32), ingestToken: "tok123", requireAuth: true });
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -90,10 +90,94 @@ test("writes need JSON, goals are cleaned, import replaces", async () => {
   assert.deepEqual(Object.keys(s.days), ["2026-01-01"]);
 });
 
+test("five wrong passwords lock an address out for a minute", async () => {
+  const wrong = () => fetch(`${base}/login`, { method: "POST", body: "password=nope",
+    headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": "203.0.113.9" } });
+  for (let i = 0; i < 5; i++) assert.equal((await wrong()).status, 401);
+  assert.equal((await wrong()).status, 429);
+});
+
 test("no password on Railway means no service", async () => {
-  const s2 = createApp({ store, root, password: "", secret: "x", ingestToken: "", requireAuth: true });
+  const bare = await openStore({ file: join(dir, "bare.json") });
+  const s2 = await createApp({ store: bare, root, password: "", secret: "x", ingestToken: "", requireAuth: true });
   await new Promise((r) => s2.listen(0, r));
   const res = await fetch(`http://127.0.0.1:${s2.address().port}/api/state`);
   assert.equal(res.status, 503);
   s2.close();
+});
+
+const j = (c) => ({ cookie: c, "content-type": "application/json" });
+
+test("upload tokens: create, use, reveal, rotate, rename, delete", async () => {
+  const c = await login();
+  const made = await (await fetch(`${base}/api/tokens`, { method: "POST", headers: j(c), body: JSON.stringify({ name: "iPhone" }) })).json();
+  assert.match(made.token, /^ahx_[\w-]{40,}$/);
+
+  const list = await (await fetch(`${base}/api/settings`, { headers: { cookie: c } })).json();
+  const t = list.tokens.find((x) => x.id === made.id);
+  assert.equal(t.name, "iPhone");
+  assert.equal(t.token, undefined, "the list never carries full tokens");
+  assert.ok(made.token.endsWith(t.preview.slice(-4)));
+  assert.equal(list.envToken, true);
+
+  const push = (tok) => fetch(`${base}/api/ingest`, { method: "POST", headers: { authorization: `Bearer ${tok}` },
+    body: JSON.stringify({ date: "2026-09-20", steps: 5000 }) });
+  assert.equal((await push(made.token)).status, 200);
+  assert.equal((await push("tok123")).status, 200, "the Railway variable still works alongside");
+  const after = await (await fetch(`${base}/api/settings`, { headers: { cookie: c } })).json();
+  assert.ok(after.tokens.find((x) => x.id === made.id).lastUsedAt);
+
+  const shown = await (await fetch(`${base}/api/tokens/${made.id}`, { headers: { cookie: c } })).json();
+  assert.equal(shown.token, made.token);
+  assert.equal((await fetch(`${base}/api/tokens/${made.id}`)).status, 401, "revealing needs a session");
+
+  const rotated = await (await fetch(`${base}/api/tokens/${made.id}/rotate`, { method: "POST", headers: j(c), body: "{}" })).json();
+  assert.notEqual(rotated.token, made.token);
+  assert.equal((await push(made.token)).status, 401, "the old value is dead");
+  assert.equal((await push(rotated.token)).status, 200);
+
+  await fetch(`${base}/api/tokens/${made.id}`, { method: "PUT", headers: j(c), body: JSON.stringify({ name: "  Watch  " }) });
+  assert.equal((await (await fetch(`${base}/api/tokens/${made.id}`, { headers: { cookie: c } })).json()).name, "Watch");
+
+  assert.equal((await fetch(`${base}/api/tokens/${made.id}`, { method: "DELETE", headers: { cookie: c } })).status, 200);
+  assert.equal((await push(rotated.token)).status, 401);
+});
+
+test("prefs keep only allowed values", async () => {
+  const c = await login();
+  const r = await (await fetch(`${base}/api/prefs`, { method: "PUT", headers: j(c),
+    body: JSON.stringify({ weightRange: "all", trendRange: "7", sleepN: 99, trendMetric: "vodka", showSample: false, evil: 1 }) })).json();
+  assert.deepEqual(r.prefs, { weightRange: "all", trendRange: 7, trendMetric: "calories", sleepN: 7, showSample: false });
+  const s = await (await fetch(`${base}/api/state`, { headers: { cookie: c } })).json();
+  assert.equal(s.prefs.weightRange, "all");
+});
+
+test("sign out everywhere retires old cookies but keeps this one", async () => {
+  const other = await login();
+  const me = await login();
+  const res = await fetch(`${base}/api/sessions/revoke`, { method: "POST", headers: j(me), body: "{}" });
+  assert.equal(res.status, 200);
+  const fresh = res.headers.get("set-cookie").split(";")[0];
+  assert.equal((await fetch(`${base}/api/state`, { headers: { cookie: other } })).status, 401);
+  assert.equal((await fetch(`${base}/api/state`, { headers: { cookie: fresh } })).status, 200);
+});
+
+// Last: it changes the password the other tests sign in with.
+test("changing the password in Settings replaces APP_PASSWORD", async () => {
+  const c = await login();
+  const put = (body, cookie = c) => fetch(`${base}/api/password`, { method: "PUT", headers: j(cookie), body: JSON.stringify(body) });
+  assert.equal((await put({ current: "wrong", next: "correct horse" })).status, 403);
+  assert.equal((await put({ current: "hunter2", next: "short" })).status, 400);
+  const ok = await put({ current: "hunter2", next: "correct horse" });
+  assert.equal(ok.status, 200);
+  const fresh = ok.headers.get("set-cookie").split(";")[0];
+  assert.equal((await fetch(`${base}/api/state`, { headers: { cookie: c } })).status, 401, "old sessions end");
+  assert.equal((await fetch(`${base}/api/state`, { headers: { cookie: fresh } })).status, 200, "this device stays in");
+
+  const tryLogin = (pw) => fetch(`${base}/login`, { method: "POST", body: `password=${encodeURIComponent(pw)}`, redirect: "manual",
+    headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": `10.0.0.${pw.length}` } });
+  assert.equal((await tryLogin("hunter2")).status, 401);
+  assert.equal((await tryLogin("correct horse")).status, 303);
+  const st = await (await fetch(`${base}/api/settings`, { headers: { cookie: fresh } })).json();
+  assert.equal(st.password.source, "settings");
 });

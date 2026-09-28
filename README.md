@@ -19,18 +19,18 @@ npm test         # calculations, Apple Health parsing, and the server's auth and
 | **Nutrition** | Calorie ring, macros, today vs average · 7D / 30D / 90D trends for calories, protein, carbs, fat and fiber against their targets |
 | **Activity & sleep** | Steps · bedtime-to-wake timeline for 7 or 14 nights with average bedtime, wake time and bedtime spread · heatmap and streaks |
 | **Calendar** | Month grid. Each day shows kcal, protein, steps, weight and a goal count, and is shaded by how many goals it hit. Click a day to edit it. |
-| **Goals & data** | Every target, which goals count toward the daily score, Apple Health sync status and setup, and JSON export, import and erase |
+| **Settings** | Laid out like a phone's Settings: goals, Apple Health (sync status, upload URL, upload tokens), dashboard defaults, password and sign-out, and backup/import/erase. Anything that used to mean editing Railway variables is here. |
 
 The daily score is simply the number of tracked goals met, never an invented health metric. The goal list sits right under the percentage.
 
 ## Apple Health / Apple Watch
 
-Apple Health has no web API; the data only leaves the iPhone when an app there sends it. Your Watch writes to Health on the phone, and one of these posts it to `https://<your-site>/api/ingest` with the header `Authorization: Bearer <INGEST_TOKEN>`:
+Apple Health has no web API; the data only leaves the iPhone when an app there sends it. Your Watch writes to Health on the phone, and one of these posts it to `https://<your-site>/api/ingest` with the header `Authorization: Bearer <token>`. Create the token in **Settings → Apple Health**. Give each app its own token so any one can be renamed, replaced or revoked there without touching the others. (An `INGEST_TOKEN` variable also works, as a fallback.)
 
 - **Health Auto Export – JSON+CSV** (recommended). Use a REST API automation in JSON format, with Aggregate data on and Summarize by Day. Pick Step Count, Weight & Body Mass, Dietary Energy, Protein, Carbohydrates, Total Fat, Fiber and Sleep Analysis, and add a Workouts automation too. Run it hourly over the last 7 days, and do one manual export over a long range to backfill.
 - **An iOS Shortcut** (free). Post `{ "date": "2026-09-27", "steps": 11240, "weight": 162.8, "sleepMins": 450, "workout": true }`. Any of `weight kcal protein carbs fat fiber steps bed wake sleepMins workout creatine` works.
 
-Each sync merges field by field. Apple's numbers replace that day's copy of the same fields, and anything Apple doesn't send (creatine, hand-typed notes) stays. Calories and macros only arrive if your food app (MyFitnessPal, Lose It!, Cronometer…) writes them to Apple Health. The Goals & data page shows when the last sync landed.
+Each sync merges field by field. Apple's numbers replace that day's copy of the same fields, and anything Apple doesn't send (creatine, hand-typed notes) stays. Calories and macros only arrive if your food app (MyFitnessPal, Lose It!, Cronometer…) writes them to Apple Health. Settings shows when the last sync landed and which token sent it.
 
 Sleep belongs to the morning you woke up. For Sunday's entry, the bedtime is Saturday night. When Apple sends measured time asleep, that is used instead of bedtime → wake.
 
@@ -38,15 +38,15 @@ Sleep belongs to the morning you woke up. For Sunday's entry, the bedtime is Sat
 
 1. **New Project → Deploy from GitHub repo →** `ashhealthtracker`. Railway reads `railway.json`: it runs `npm start` and health-checks `/healthz`.
 2. **+ New → Database → PostgreSQL** in the same project.
-3. In the web service's **Variables**, add:
+3. In the web service's **Variables**, add just two:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
-   - `APP_PASSWORD`: the site's password
-   - `SESSION_SECRET`: a long random string (`openssl rand -hex 32`)
-   - `INGEST_TOKEN`: another long random string, used by your phone
+   - `APP_PASSWORD`: the password for your first sign-in
 4. **Settings → Networking → Generate Domain.** Open it and sign in.
-5. Point the iPhone app at `https://<that-domain>/api/ingest` (the Goals & data page has the exact URL and a Copy button).
+5. In the site's **Settings**: create an Apple Health upload token and copy the upload URL into your iPhone app. If you like, change the password there too; after that, `APP_PASSWORD` no longer signs in.
 
-On Railway the site refuses to serve until `APP_PASSWORD` is set. The server creates its tables on first start.
+Nothing else needs Railway after that. The session-signing secret is generated and kept in the database. You can still set `SESSION_SECRET` or `INGEST_TOKEN` as variables if you prefer. On Railway, the site refuses to serve until a password exists. The server creates its tables on first start.
+
+**Locked out?** Add the variable `PASSWORD_RESET` = `1` and redeploy. The password set in Settings is cleared and `APP_PASSWORD` works again. Remove the variable afterwards.
 
 ## Layout
 
@@ -55,7 +55,7 @@ server.mjs        entry point: reads Railway's variables, picks Postgres or a lo
 server/app.mjs    HTTP routes: login, the page's JSON API, /api/ingest, static files
 server/apple.mjs  Apple Health payloads (Health Auto Export or plain JSON) → day fields
 server/db.mjs     Postgres storage, or data/local.json without a DATABASE_URL
-server/auth.mjs   password, signed session cookie, ingest token
+server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit
 index.html        shell: rail, log dialog, tooltip
 css/app.css       design tokens shared with Specular + every component
 js/metrics.js     pure calculations: goals, score, streaks, averages, weight progress

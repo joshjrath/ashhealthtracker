@@ -3,29 +3,42 @@
    functions of the context; everything here just decides when to draw.
    ────────────────────────────────────────────────────────────────────────── */
 import { keyOf, ago, DEFAULT_GOALS, GOAL_IDS } from "./metrics.js";
-import { fetchState, api, readExport, seed, demoDismissed, dismissDemo } from "./store.js";
+import { fetchState, api, readExport, seed } from "./store.js";
 import { PAGES, CHARTS, fmtDay } from "./views.js";
 import { esc } from "./charts.js";
 
-/* state = { days, goals, lastSync, open, demo } — days are sample days while demo is on */
-let state = { days: {}, goals: { ...DEFAULT_GOALS }, lastSync: null, open: false, demo: false };
+/* state = { days, goals, lastSync, prefs, open, demo } — days are sample days while demo is on */
+let state = { days: {}, goals: { ...DEFAULT_GOALS }, lastSync: null, prefs: {}, open: false, demo: false };
+/* What Settings shows: tokens (masked), where the password comes from, storage. */
+let settingsInfo = null;
+/* Token values revealed with the eye button, this page load only. */
+const revealed = {};
 
 async function refresh() {
-  const s = await fetchState();
-  const demo = !Object.keys(s.days).length && !demoDismissed();
+  const [s, st] = await Promise.all([fetchState(), api.settings()]);
+  const demo = !Object.keys(s.days).length && s.prefs?.showSample !== false;
   state = { ...s, demo, days: demo ? seed(keyOf(new Date())).days : s.days };
+  settingsInfo = st;
+  // Saved defaults open the charts; a tab clicked this session wins until the tab closes.
+  for (const k of PREF_KEYS) if (!(k in sessionUi) && s.prefs?.[k] !== undefined) ui[k] = s.prefs[k];
 }
 
 const UI_KEY = "ash-health-ui";
+const PREF_KEYS = ["weightRange", "trendRange", "trendMetric", "sleepN"];
 const ui = {
   weightRange: "90", trendMetric: "calories", trendRange: 30, sleepN: 7,
   heatWeek: 0, calMonth: 0, demoHidden: false,
 };
-try { Object.assign(ui, JSON.parse(sessionStorage.getItem(UI_KEY) || "{}"), { heatWeek: 0, calMonth: 0 }); } catch { /* fresh */ }
-const keepUi = () => { try { sessionStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch { /* fine */ } };
+let sessionUi = {};
+try { sessionUi = JSON.parse(sessionStorage.getItem(UI_KEY) || "{}") || {}; } catch { /* fresh */ }
+Object.assign(ui, sessionUi, { heatWeek: 0, calMonth: 0 });
+const keepUi = () => {
+  sessionUi = { ...ui };
+  try { sessionStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch { /* fine */ }
+};
 
 const view = document.getElementById("view");
-const ctx = () => ({ state, g: state.goals, days: state.days, today: keyOf(new Date()), ui });
+const ctx = () => ({ state, g: state.goals, days: state.days, today: keyOf(new Date()), ui, settings: settingsInfo, revealed });
 
 function page() {
   const h = location.hash.replace(/^#\/?/, "");
@@ -41,10 +54,9 @@ function render() {
   const c = ctx();
   view.innerHTML = PAGES[p].render(c);
   document.title = `${PAGES[p].title} · Ash Health`;
-  document.querySelectorAll("aside nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === p));
+  document.querySelectorAll("aside [data-page]").forEach((a) => a.classList.toggle("on", a.dataset.page === p));
   mountCharts(c);
   animateJourney();
-  bindSettings();
   syncPill();
 }
 
@@ -151,13 +163,64 @@ const ACTS = {
   heat: (el) => { const v = Number(el.dataset.v); ui.heatWeek = v === 0 ? 0 : Math.min(0, ui.heatWeek + v); },
   cal: (el) => { const v = Number(el.dataset.v); ui.calMonth = v === 0 ? 0 : Math.min(0, ui.calMonth + v); },
   "demo-hide": () => { ui.demoHidden = true; },
-  "copy-url": (el) => {
-    navigator.clipboard?.writeText(el.dataset.v).then(() => { el.textContent = "Copied"; });
+  "copy-text": (el) => { copy(el.dataset.v, el); return false; },
+  "demo-clear": () => {
+    leaveDemo();
+    state.prefs = { ...state.prefs, showSample: false };
+    api.putPrefs({ showSample: false }).catch(failed);
+  },
+  jump: (el) => {
+    document.getElementById(el.dataset.v)?.scrollIntoView({ behavior: "smooth", block: "start" });
     return false;
   },
-  "demo-clear": () => {
-    dismissDemo();
-    leaveDemo();
+  "set-pref": async (el) => {
+    const k = el.dataset.k;
+    let v = el.dataset.v;
+    if (k === "trendRange" || k === "sleepN") v = Number(v);
+    if (k === "showSample") v = v === "true";
+    state.prefs = { ...state.prefs, [k]: v };
+    if (PREF_KEYS.includes(k)) { ui[k] = v; keepUi(); }
+    render();
+    try {
+      await api.putPrefs({ [k]: v });
+      if (k === "showSample") { await refresh(); render(); }
+    } catch (err) { failed(err); }
+  },
+  "token-reveal": async (el) => {
+    const id = el.dataset.v;
+    if (revealed[id]) delete revealed[id];
+    else revealed[id] = (await api.revealToken(id).catch(failed))?.token;
+    render();
+  },
+  "token-copy": async (el) => {
+    const id = el.dataset.v;
+    const token = revealed[id] || (await api.revealToken(id).catch(failed))?.token;
+    if (token) copy(token, el);
+  },
+  "token-rename": async (el) => {
+    const t = settingsInfo?.tokens.find((x) => x.id === el.dataset.v);
+    const name = prompt("Name this token", t?.name || "");
+    if (name === null) return;
+    await api.renameToken(el.dataset.v, name).catch(failed);
+    await reload();
+  },
+  "token-rotate": async (el) => {
+    const t = settingsInfo?.tokens.find((x) => x.id === el.dataset.v);
+    if (!confirm(`Replace “${t?.name}” with a new value? Whatever uses the old one stops syncing until you paste the new one in.`)) return;
+    const r = await api.rotateToken(el.dataset.v).catch(failed);
+    if (r) revealed[r.id] = r.token;
+    await reload();
+  },
+  "token-delete": async (el) => {
+    const t = settingsInfo?.tokens.find((x) => x.id === el.dataset.v);
+    if (!confirm(`Delete “${t?.name}”? Whatever uses it stops syncing.`)) return;
+    await api.deleteToken(el.dataset.v).catch(failed);
+    delete revealed[el.dataset.v];
+    await reload();
+  },
+  "revoke-sessions": async () => {
+    if (!confirm("Sign out every other browser and device? This one stays signed in.")) return;
+    if (await api.revokeSessions().catch(failed)) alert("Done — every other device is signed out.");
   },
   reset: () => {
     if (!confirm("Erase every logged day, including Apple Health's? Export first if you want a copy.")) return false;
@@ -184,12 +247,40 @@ document.addEventListener("click", (e) => {
   const fn = ACTS[el.dataset.act];
   if (!fn) return;
   e.preventDefault();
-  if (fn(el) === false || el.dataset.act === "log") return;
+  const r = fn(el);
+  if (r === false || r instanceof Promise || el.dataset.act === "log") return;
   keepUi();
   render();
 });
 
-addEventListener("hashchange", () => { render(); scrollTo(0, 0); });
+function copy(text, el) {
+  const done = () => {
+    const before = el.innerHTML;
+    el.classList.add("done");
+    if (!el.classList.contains("ib")) el.textContent = "Copied";
+    el.title = "Copied";
+    setTimeout(() => { el.innerHTML = before; el.classList.remove("done"); }, 1400);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => prompt("Copy this:", text));
+  else prompt("Copy this:", text);
+}
+
+function failed(err) {
+  if (err?.message !== "Signed out") alert(err?.message || "Something went wrong");
+}
+
+/** Fetch again and redraw — after a settings change the server has the final word. */
+async function reload() {
+  try { await refresh(); } catch (err) { failed(err); }
+  render();
+}
+
+addEventListener("hashchange", () => {
+  scrollTo(0, 0);
+  // Settings shows live status (last sync, token use), so it always fetches fresh.
+  if (page() === "settings") reload();
+  else render();
+});
 
 /* ── the log dialog ────────────────────────────────────────────────────── */
 
@@ -274,44 +365,75 @@ document.getElementById("logdelete").addEventListener("click", () => {
   commit(() => api.deleteDay(key));
 });
 
-/* ── settings ──────────────────────────────────────────────────────────── */
+/* ── settings forms ────────────────────────────────────────────────────── */
 
-function bindSettings() {
-  const gf = document.getElementById("goalsform");
-  if (gf) {
-    gf.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const next = { ...state.goals };
-      for (const k of Object.keys(DEFAULT_GOALS)) {
-        if (k === "tracked") continue;
-        const v = Number(gf.elements[k].value);
-        if (Number.isFinite(v)) next[k] = v;
-      }
-      if (next.kcalLow > next.kcalHigh) [next.kcalLow, next.kcalHigh] = [next.kcalHigh, next.kcalLow];
-      next.tracked = [...gf.querySelectorAll("input[name=tracked]:checked")].map((i) => i.value).filter((id) => GOAL_IDS.includes(id));
-      state.goals = next;
-      commit(() => api.putGoals(next)).then(() => {
-        const m = document.getElementById("savedmsg");
-        if (m) m.hidden = false;
-      });
-    });
+const FORMS = {
+  goals(f) {
+    const next = { ...state.goals };
+    for (const k of Object.keys(DEFAULT_GOALS)) {
+      if (k === "tracked") continue;
+      const v = Number(f.elements[k].value);
+      if (Number.isFinite(v)) next[k] = v;
+    }
+    if (next.kcalLow > next.kcalHigh) [next.kcalLow, next.kcalHigh] = [next.kcalHigh, next.kcalLow];
+    next.tracked = [...f.querySelectorAll("input[name=tracked]:checked")].map((i) => i.value).filter((id) => GOAL_IDS.includes(id));
+    state.goals = next;
+    commit(() => api.putGoals(next)).then(() => flash("#sec-goals", "Saved"));
+  },
+  async token(f) {
+    const name = f.elements.name.value.trim() || "iPhone";
+    const r = await api.createToken(name).catch(failed);
+    if (!r) return;
+    revealed[r.id] = r.token; // shown in full so it can be copied straight away
+    await reload();
+  },
+  async password(f) {
+    const next = f.elements.next.value, confirmPw = f.elements.confirm.value;
+    const err = (msg) => {
+      const el = f.querySelector("[data-err]");
+      el.textContent = msg;
+      el.hidden = !msg;
+    };
+    if (next.length < 8) return err("Use at least 8 characters.");
+    if (next !== confirmPw) return err("The two new passwords don't match.");
+    err("");
+    try {
+      await api.changePassword(f.elements.current?.value ?? "", next);
+    } catch (e) {
+      return err(e.message);
+    }
+    await reload();
+    flash("#sec-security", "Password saved. Other devices are signed out.");
+  },
+};
+
+view.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-form]");
+  if (!f || !FORMS[f.dataset.form]) return;
+  e.preventDefault();
+  FORMS[f.dataset.form](f);
+});
+
+view.addEventListener("change", async (e) => {
+  if (e.target.id !== "importfile") return;
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const next = readExport(await file.text());
+    if (!confirm(`Replace every stored day with the ${Object.keys(next.days).length} days in this file?`)) return;
+    await api.importAll(next);
+    await reload();
+  } catch (err) {
+    alert(`Couldn't import that file: ${err.message}`);
   }
-  const file = document.getElementById("importfile");
-  if (file) {
-    file.addEventListener("change", async () => {
-      const f = file.files[0];
-      if (!f) return;
-      try {
-        const next = readExport(await f.text());
-        if (!confirm(`Replace every stored day with the ${Object.keys(next.days).length} days in this file?`)) return;
-        await api.importAll(next);
-        await refresh();
-        render();
-      } catch (err) {
-        alert(`Couldn't import that file: ${err.message}`);
-      }
-    });
-  }
+});
+
+function flash(section, msg) {
+  const el = document.querySelector(`${section} [data-saved]`);
+  if (!el) return;
+  el.textContent = msg;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 try {

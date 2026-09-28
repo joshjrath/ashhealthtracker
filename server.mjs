@@ -1,6 +1,8 @@
-// Ash Health's web server. On Railway it reads its settings from Variables;
-// locally, with none set, it runs open on http://localhost:5173 and keeps
-// the log in data/local.json.
+// Ash Health's web server. On Railway it reads a few Variables; everything
+// else — upload tokens, the password after first sign-in, dashboard
+// defaults — is changed in the site's own Settings page. Locally, with
+// nothing set, it runs open on http://localhost:5173 and keeps the log in
+// data/local.json.
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,23 +13,28 @@ const root = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 const onRailway = !!(env.RAILWAY_ENVIRONMENT_NAME || env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID);
 
-let secret = env.SESSION_SECRET;
-if (!secret) {
-  secret = randomBytes(32).toString("hex");
-  if (env.APP_PASSWORD) console.warn("[web] SESSION_SECRET is not set: sign-ins will reset on every restart.");
-}
-if (!env.APP_PASSWORD) {
-  console.warn(onRailway
-    ? "[web] APP_PASSWORD is not set: the site will refuse to serve until it is."
-    : "[web] APP_PASSWORD is not set: running open for local use.");
-}
-if (!env.INGEST_TOKEN) console.warn("[web] INGEST_TOKEN is not set: Apple Health uploads are switched off.");
-
 const store = await openStore({
   databaseUrl: env.DATABASE_URL,
   file: env.DATA_FILE || join(root, "data", "local.json"),
 });
-const app = createApp({
+
+// Sessions are signed with SESSION_SECRET if set, otherwise with a secret
+// made once and kept in the database, so sign-ins survive restarts.
+let secret = env.SESSION_SECRET || (await store.getMeta("sessionSecret"));
+if (!secret) {
+  secret = randomBytes(32).toString("hex");
+  await store.setMeta("sessionSecret", secret);
+}
+
+// Locked out? Set PASSWORD_RESET=1 on Railway and redeploy: the password
+// set in Settings is dropped and APP_PASSWORD works again. Then remove it.
+if (env.PASSWORD_RESET === "1") {
+  const auth = (await store.getMeta("auth")) || {};
+  await store.setMeta("auth", { epoch: (auth.epoch ?? 0) + 1 });
+  console.warn("[web] PASSWORD_RESET=1: the Settings password was cleared; sign in with APP_PASSWORD, then remove PASSWORD_RESET.");
+}
+
+const app = await createApp({
   store,
   root,
   password: env.APP_PASSWORD,
@@ -35,6 +42,13 @@ const app = createApp({
   ingestToken: env.INGEST_TOKEN,
   requireAuth: onRailway,
 });
+
+const auth = await store.getMeta("auth");
+if (!env.APP_PASSWORD && !auth?.hash) {
+  console.warn(onRailway
+    ? "[web] No password yet: set APP_PASSWORD in Railway → Variables. The site stays closed until then."
+    : "[web] No password set: running open for local use.");
+}
 
 const port = Number(env.PORT) || 5173;
 app.listen(port, () => console.log(`[web] Ash Health on :${port} (${store.kind} storage)`));

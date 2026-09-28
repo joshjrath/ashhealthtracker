@@ -526,63 +526,135 @@ export function calendar(ctx) {
 
 /* ── settings ──────────────────────────────────────────────────────────── */
 
-export function settings(ctx) {
+const ICONS = {
+  goals: `<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  apple: `<svg viewBox="0 0 20 20"><path d="M10 16.5s-6-3.6-6-8A3.4 3.4 0 0 1 10 6.4a3.4 3.4 0 0 1 6 2.1c0 4.4-6 8-6 8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
+  sliders: `<svg viewBox="0 0 20 20"><path d="M4 6h12M4 14h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="6" r="2.2" fill="var(--card)" stroke="currentColor" stroke-width="1.8"/><circle cx="13" cy="14" r="2.2" fill="var(--card)" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  lock: `<svg viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 9V6.8a3 3 0 0 1 6 0V9" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  data: `<svg viewBox="0 0 20 20"><ellipse cx="10" cy="5.5" rx="6" ry="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 5.5v9c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-9M4 10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  eye: `<svg viewBox="0 0 20 20"><path d="M2.5 10S5.2 4.8 10 4.8 17.5 10 17.5 10 14.8 15.2 10 15.2 2.5 10 2.5 10z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  eyeOff: `<svg viewBox="0 0 20 20"><path d="M2.5 10S5.2 4.8 10 4.8 17.5 10 17.5 10 14.8 15.2 10 15.2 2.5 10 2.5 10z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 16L16 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+  copy: `<svg viewBox="0 0 20 20"><rect x="7" y="7" width="9.5" height="9.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 4.8A1.8 1.8 0 0 0 11.2 3.5H5.3a1.8 1.8 0 0 0-1.8 1.8v5.9A1.8 1.8 0 0 0 4.8 13" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  rotate: `<svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.8v3.4h-3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  pen: `<svg viewBox="0 0 20 20"><path d="M4 16l.8-3.2L13.5 4a1.6 1.6 0 0 1 2.3 0l.2.2a1.6 1.6 0 0 1 0 2.3L7.2 15.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
+  trash: `<svg viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  chevron: `<svg viewBox="0 0 20 20"><path d="M8 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+const SECTIONS = {
+  goals: { title: "Goals", color: "#F3E96C" },
+  apple: { title: "Apple Health", color: "#F08A78" },
+  display: { title: "Dashboard defaults", color: "#5CC8F0" },
+  security: { title: "Sign-in & security", color: "#9D8CF5" },
+  data: { title: "Your data", color: "#62D6C4" },
+};
+const ICON_OF = { goals: "goals", apple: "apple", display: "sliders", security: "lock", data: "data" };
+
+function secHead(id, desc) {
+  const s = SECTIONS[id];
+  return `<header class="sh"><span class="si" style="--c:${s.color}">${ICONS[ICON_OF[id]]}</span>
+    <div><h2>${esc(s.title)}</h2><p>${desc}</p></div></header>`;
+}
+const row = (label, desc, control) => `<div class="srow"><div class="sl"><b>${label}</b>${desc ? `<span>${desc}</span>` : ""}</div><div class="ctl">${control}</div></div>`;
+const seg = (k, options, current) => `<div class="tabs" role="radiogroup">${options.map(([v, l]) =>
+  `<button type="button" role="radio" class="tab${String(v) === String(current) ? " on" : ""}" aria-checked="${String(v) === String(current)}"
+    data-act="set-pref" data-k="${k}" data-v="${esc(v)}">${esc(l)}</button>`).join("")}</div>`;
+const toggle = (k, on, label) => `<button type="button" role="switch" aria-checked="${on}" aria-label="${esc(label)}"
+  class="switch${on ? " on" : ""}" data-act="set-pref" data-k="${k}" data-v="${!on}"><i></i></button>`;
+const iconBtn = (act, id, icon, label) => `<button type="button" class="ib" data-act="${act}" data-v="${esc(id)}" title="${esc(label)}" aria-label="${esc(label)}">${ICONS[icon]}</button>`;
+
+/** The phone-style list at the top: each row says where things stand and jumps to it. */
+function overview(ctx) {
+  const st = ctx.settings || {};
+  const g = ctx.g;
+  const sync = ctx.state.lastSync?.at ? `Synced ${ago(new Date(ctx.state.lastSync.at))}` : (st.tokens?.length || st.envToken) ? "Waiting for first sync" : "Not connected";
+  const pw = st.password?.source === "settings" ? "Password set here" : st.password?.source === "railway" ? "Password from Railway" : "No password";
+  const n = ctx.state.demo ? 0 : Object.keys(ctx.days).length;
+  const rows = [
+    ["goals", `${fmtInt(g.kcalTarget)} kcal · ${g.protein}g protein · ${fmt1(g.goalWeight)} lb`],
+    ["apple", sync],
+    ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
+    ["security", pw],
+    ["data", `${n} day${n === 1 ? "" : "s"} stored`],
+  ];
+  return `<nav class="card overview" aria-label="Settings sections">${rows.map(([id, value]) =>
+    `<button type="button" class="ov" data-act="jump" data-v="sec-${id}">
+      <span class="si" style="--c:${SECTIONS[id].color}">${ICONS[ICON_OF[id]]}</span>
+      <b>${esc(SECTIONS[id].title)}</b><span class="val">${esc(value)}</span><span class="chev">${ICONS.chevron}</span>
+    </button>`).join("")}</nav>`;
+}
+
+function goalsSection(ctx) {
   const { g } = ctx;
   const num = (name, label, value, step = 1, unit = "") => `<label class="field"><span>${esc(label)}</span>
     <span class="inp"><input type="number" name="${name}" value="${esc(value)}" step="${step}" min="0" required>${unit ? `<em>${esc(unit)}</em>` : ""}</span></label>`;
   const checks = GOAL_IDS.map((id) => `<label class="chk"><input type="checkbox" name="tracked" value="${id}"${g.tracked.includes(id) ? " checked" : ""}><i style="--c:${color(id)}"></i>${esc(METRICS[id].label)}</label>`).join("");
-  const n = Object.keys(ctx.days).length;
-  return `<form class="card settings" id="goalsform">
-      <h2>Weight goal</h2>
-      <div class="fields">${num("startWeight", "Starting weight", g.startWeight, 0.1, "lb")}${num("goalWeight", "Goal weight", g.goalWeight, 0.1, "lb")}</div>
-      <h2>Daily targets</h2>
-      <div class="fields">
-        ${num("kcalTarget", "Calorie target", g.kcalTarget, 10, "kcal")}
-        ${num("kcalLow", "Success zone from", g.kcalLow, 10, "kcal")}
-        ${num("kcalHigh", "Success zone to", g.kcalHigh, 10, "kcal")}
-        ${num("protein", "Protein", g.protein, 1, "g")}
-        ${num("carbs", "Carbs", g.carbs, 1, "g")}
-        ${num("fat", "Fat", g.fat, 1, "g")}
-        ${num("fiber", "Fiber", g.fiber, 1, "g")}
-        ${num("steps", "Steps", g.steps, 100)}
-        ${num("sleepHours", "Sleep", g.sleepHours, 0.25, "h")}
-      </div>
-      <h2>Goals in the daily score</h2>
-      <div class="checks">${checks}</div>
-      <div class="actions"><button class="btn primary" type="submit">Save goals</button><span class="saved" id="savedmsg" hidden>Saved</span></div>
-    </form>
-    ${appleCard(ctx)}
-    <section class="card settings">
-      <h2>Your data</h2>
-      <p class="hint">${ctx.state.demo ? "Showing sample days — nothing is stored yet." : `${n} day${n === 1 ? "" : "s"} stored on the server.`} Export a copy any time to keep a backup.</p>
-      <div class="actions">
-        <button type="button" class="btn" data-act="export">Export JSON</button>
-        <label class="btn">Import JSON<input type="file" accept="application/json,.json" id="importfile" hidden></label>
-        ${ctx.state.demo ? `<button type="button" class="btn light" data-act="demo-clear">Hide sample data</button>` : `<button type="button" class="btn danger" data-act="reset">Erase all days</button>`}
-      </div>
-    </section>
-    ${ctx.state.open ? "" : `<form method="post" action="/logout" class="signout"><button class="btn" type="submit">Sign out</button></form>`}`;
+  return `<form class="card sc" id="sec-goals" data-form="goals">
+    ${secHead("goals", "Your targets. Every ring, streak and score on the dashboard is measured against these.")}
+    <h3>Weight</h3>
+    <div class="fields">${num("startWeight", "Starting weight", g.startWeight, 0.1, "lb")}${num("goalWeight", "Goal weight", g.goalWeight, 0.1, "lb")}</div>
+    <h3>Daily targets</h3>
+    <div class="fields">
+      ${num("kcalTarget", "Calorie target", g.kcalTarget, 10, "kcal")}
+      ${num("kcalLow", "Success zone from", g.kcalLow, 10, "kcal")}
+      ${num("kcalHigh", "Success zone to", g.kcalHigh, 10, "kcal")}
+      ${num("protein", "Protein", g.protein, 1, "g")}
+      ${num("carbs", "Carbs", g.carbs, 1, "g")}
+      ${num("fat", "Fat", g.fat, 1, "g")}
+      ${num("fiber", "Fiber", g.fiber, 1, "g")}
+      ${num("steps", "Steps", g.steps, 100)}
+      ${num("sleepHours", "Sleep", g.sleepHours, 0.25, "h")}
+    </div>
+    <h3>Counted in the daily score</h3>
+    <div class="checks">${checks}</div>
+    <div class="actions"><button class="btn primary" type="submit">Save goals</button><span class="saved" data-saved hidden>Saved</span></div>
+  </form>`;
 }
 
-/** Where Apple Health data comes from, and whether it's arriving. */
-function appleCard(ctx) {
+function appleSection(ctx) {
+  const st = ctx.settings || {};
   const s = ctx.state.lastSync;
   const url = `${location.origin}/api/ingest`;
   const status = s?.at
     ? `<div class="sync ok"><span class="dot"></span><div><b>Last sync ${esc(ago(new Date(s.at)))}</b>
-        <span>${esc(s.source || "Apple Health")} · ${s.days} day${s.days === 1 ? "" : "s"} updated${s.from ? ` (${esc(fmtDay(s.from, true))}${s.to !== s.from ? ` – ${esc(fmtDay(s.to, true))}` : ""})` : ""}</span></div></div>`
-    : `<div class="sync"><span class="dot"></span><div><b>No sync yet</b><span>Set up the iPhone side below, then run it once.</span></div></div>`;
-  return `<section class="card settings apple">
-    <h2>Apple Health</h2>
+        <span>${esc(s.source || "Apple Health")}${s.token ? ` via “${esc(s.token)}”` : ""} · ${s.days} day${s.days === 1 ? "" : "s"} updated${s.from ? ` (${esc(fmtDay(s.from, true))}${s.to !== s.from ? ` – ${esc(fmtDay(s.to, true))}` : ""})` : ""}</span></div></div>`
+    : `<div class="sync"><span class="dot"></span><div><b>No sync yet</b><span>Create a token below, paste it into your iPhone app, and run it once.</span></div></div>`;
+
+  const tokens = (st.tokens || []).map((t) => {
+    const shown = ctx.revealed[t.id];
+    const used = t.lastUsedAt ? `Last used ${ago(new Date(t.lastUsedAt))}` : "Never used";
+    return `<div class="tok">
+      <div class="tk-main">
+        <b>${esc(t.name)}</b>
+        <code class="${shown ? "full" : ""}">${esc(shown || t.preview.replace("…", "••••••••••••"))}</code>
+        <span>${used} · created ${esc(fmtDay(t.createdAt.slice(0, 10), true))}</span>
+      </div>
+      <div class="tk-acts">
+        ${iconBtn("token-reveal", t.id, shown ? "eyeOff" : "eye", shown ? "Hide" : "Reveal")}
+        ${iconBtn("token-copy", t.id, "copy", "Copy")}
+        ${iconBtn("token-rename", t.id, "pen", "Rename")}
+        ${iconBtn("token-rotate", t.id, "rotate", "Replace with a new value")}
+        ${iconBtn("token-delete", t.id, "trash", "Delete")}
+      </div>
+    </div>`;
+  }).join("");
+
+  return `<section class="card sc" id="sec-apple">
+    ${secHead("apple", "Your Apple Watch saves to Apple Health on your iPhone; an app there sends it here. Steps, weight, sleep and workouts fill in on their own — calories and macros too if your food app writes to Apple Health.")}
     ${status}
-    <p class="hint">Your Apple Watch saves to Apple Health on your iPhone. An app on the phone then sends it here. Steps, weight, sleep and workouts fill in automatically, and so do calories and macros if your food app writes to Apple Health. Creatine and anything you type in yourself stay as they are.</p>
-    <div class="field"><span>Upload URL</span>
-      <div class="urlrow"><code>${esc(url)}</code><button type="button" class="btn" data-act="copy-url" data-v="${esc(url)}">Copy</button></div>
-    </div>
+    ${row("Upload URL", "Paste this into Health Auto Export or your Shortcut.",
+      `<div class="urlrow"><code>${esc(url)}</code><button type="button" class="btn" data-act="copy-text" data-v="${esc(url)}">Copy</button></div>`)}
+    <h3>Upload tokens</h3>
+    <p class="hint">Each token lets one app send data here — nothing else. Give each phone or app its own, so you can revoke one without touching the others.</p>
+    <div class="toks">${tokens || `<div class="empty-row">No tokens yet.</div>`}</div>
+    ${st.envToken ? `<p class="hint small">A token is also set in Railway as <code>INGEST_TOKEN</code>. It keeps working; delete the variable once your phone uses a token from this list.</p>` : ""}
+    <form class="newtok" data-form="token">
+      <span class="inp"><input name="name" placeholder="Name it, e.g. iPhone — Health Auto Export" maxlength="60" aria-label="New token name"></span>
+      <button type="submit" class="btn primary">Create token</button>
+    </form>
     <details class="howto"><summary>Set up Health Auto Export (recommended)</summary>
       <ol>
         <li>Install <b>Health Auto Export – JSON+CSV</b> on your iPhone and allow it to read Health.</li>
-        <li>Automations → New → <b>REST API</b>. URL: the upload URL above. Add a header named <code>Authorization</code> with the value <code>Bearer</code>, a space, then your <code>INGEST_TOKEN</code>.</li>
+        <li>Automations → New → <b>REST API</b>. URL: the upload URL above. Add a header named <code>Authorization</code> with the value <code>Bearer</code>, a space, then a token from this list.</li>
         <li>Data type <b>Health Metrics</b>: Step Count, Weight &amp; Body Mass, Dietary Energy, Protein, Carbohydrates, Total Fat, Fiber, Sleep Analysis. Add a second automation for <b>Workouts</b>.</li>
         <li>Export format <b>JSON</b>, Aggregate data <b>on</b>, Summarize by <b>Day</b>, date range <b>Last 7 days</b>, sync every hour.</li>
         <li>Tap <b>Manual export</b> once with a long date range to backfill your history.</li>
@@ -597,6 +669,68 @@ function appleCard(ctx) {
       </ol>
     </details>
   </section>`;
+}
+
+function displaySection(ctx) {
+  const p = ctx.state.prefs || {};
+  return `<section class="card sc" id="sec-display">
+    ${secHead("display", "How the dashboard opens. Saved to your account, so every device starts the same way.")}
+    ${row("Weight chart range", "The window the weight journey opens on.", seg("weightRange", [["30", "30D"], ["90", "90D"], ["all", "All"]], p.weightRange))}
+    ${row("Nutrition trend range", "Days shown on the nutrition trends chart.", seg("trendRange", [[7, "7D"], [30, "30D"], [90, "90D"]], p.trendRange))}
+    ${row("Nutrition trend metric", "Which macro the trends chart shows first.", seg("trendMetric", ["calories", "protein", "carbs", "fat", "fiber"].map((m) => [m, METRICS[m].label]), p.trendMetric))}
+    ${row("Sleep timeline", "Nights shown on the sleep chart.", seg("sleepN", [[7, "7 nights"], [14, "14 nights"]], p.sleepN))}
+    ${row("Sample data", "Show made-up days until your first real day arrives, so the charts aren't empty.", toggle("showSample", p.showSample !== false, "Show sample data"))}
+  </section>`;
+}
+
+function securitySection(ctx) {
+  const st = ctx.settings || {};
+  const pw = st.password || {};
+  const where = pw.source === "settings" ? `Set here ${pw.updatedAt ? esc(ago(new Date(pw.updatedAt))) : ""}. Railway's <code>APP_PASSWORD</code> no longer signs in.`
+    : pw.source === "railway" ? "Using <code>APP_PASSWORD</code> from Railway. Change it here and you'll never need Railway for it again."
+    : "No password: anyone who can open this page can use it. Fine on your own computer; set one before going online.";
+  return `<section class="card sc" id="sec-security">
+    ${secHead("security", "Who can open the dashboard.")}
+    ${row("Password", where, "")}
+    <form class="pwform" data-form="password" autocomplete="on">
+      <input type="text" name="username" value="ash-health" autocomplete="username" hidden>
+      <div class="fields">
+        ${pw.set ? `<label class="field"><span>Current password</span><span class="inp"><input type="password" name="current" autocomplete="current-password" required></span></label>` : ""}
+        <label class="field"><span>New password</span><span class="inp"><input type="password" name="next" autocomplete="new-password" minlength="8" required></span></label>
+        <label class="field"><span>Confirm new password</span><span class="inp"><input type="password" name="confirm" autocomplete="new-password" minlength="8" required></span></label>
+      </div>
+      <div class="actions"><button type="submit" class="btn primary">${pw.set ? "Change password" : "Set password"}</button><span class="saved" data-saved hidden></span><span class="err" data-err hidden></span></div>
+    </form>
+    ${pw.set ? row("Sign out other devices", "Ends every session except this one — use it if you signed in somewhere you shouldn't stay signed in.",
+      `<button type="button" class="btn" data-act="revoke-sessions">Sign out others</button>`) : ""}
+    ${ctx.state.open ? "" : row("Sign out", "Only this browser.", `<form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>`)}
+    <p class="hint small">Locked out? In Railway → Variables, add <code>PASSWORD_RESET</code> = <code>1</code> and redeploy: the password set here is cleared and <code>APP_PASSWORD</code> works again. Then remove the variable.</p>
+  </section>`;
+}
+
+function dataSection(ctx) {
+  const n = Object.keys(ctx.days).length;
+  const where = ctx.settings?.storage === "postgres" ? "Postgres database on Railway" : "data/local.json on this computer";
+  return `<section class="card sc" id="sec-data">
+    ${secHead("data", ctx.state.demo ? "Showing sample days — nothing is stored yet." : `${n} day${n === 1 ? "" : "s"} stored.`)}
+    ${row("Stored in", esc(where), "")}
+    ${row("Backup", "A JSON file of every day and your goals. Import replaces what's stored.",
+      `<div class="actions"><button type="button" class="btn" data-act="export">Export</button>
+        <label class="btn">Import<input type="file" accept="application/json,.json" id="importfile" hidden></label></div>`)}
+    ${ctx.state.demo ? "" : row("Erase all days", "Removes every logged and synced day. Goals, tokens and settings stay.",
+      `<button type="button" class="btn danger" data-act="reset">Erase…</button>`)}
+  </section>`;
+}
+
+export function settings(ctx) {
+  return `<div class="settingsgrid">
+    ${overview(ctx)}
+    ${goalsSection(ctx)}
+    ${appleSection(ctx)}
+    ${displaySection(ctx)}
+    ${securitySection(ctx)}
+    ${dataSection(ctx)}
+  </div>`;
 }
 
 /* ── pages ─────────────────────────────────────────────────────────────── */
@@ -634,8 +768,8 @@ export const PAGES = {
     render: (ctx) => `${pageHeader(ctx, "Calendar", false)}${demoBanner(ctx)}${calendar(ctx)}`,
   },
   settings: {
-    title: "Goals & data",
-    render: (ctx) => `${pageHeader(ctx, "Goals & data", false)}${settings(ctx)}`,
+    title: "Settings",
+    render: (ctx) => `${pageHeader(ctx, "Settings", false)}${settings(ctx)}`,
   },
 };
 

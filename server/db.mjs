@@ -4,7 +4,7 @@
 
    Both keep the same shape:
      days  key "YYYY-MM-DD" → { weight, kcal, ... }
-     meta  "goals" → {...}, "lastSync" → { at, source, days }
+     meta  "goals", "lastSync", "prefs", "tokens", "auth", "sessionSecret"
    ────────────────────────────────────────────────────────────────────────── */
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -90,6 +90,10 @@ async function openPg(url) {
         }
       });
     },
+    async getMeta(k) {
+      const r = await pool.query("select v from meta where k = $1", [k]);
+      return r.rows[0]?.v ?? null;
+    },
     async setMeta(k, v) {
       await pool.query(
         "insert into meta (k, v) values ($1, $2) on conflict (k) do update set v = excluded.v",
@@ -137,6 +141,7 @@ async function openFile(file) {
       await flush();
     },
     async replaceDays(days) { doc.days = { ...days }; await flush(); },
+    async getMeta(k) { return doc.meta[k] === undefined ? null : structuredClone(doc.meta[k]); },
     async setMeta(k, v) { doc.meta[k] = v; await flush(); },
     async ping() {},
     close: async () => { await chain; },

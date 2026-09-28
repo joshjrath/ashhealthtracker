@@ -32,6 +32,16 @@ export const api = {
   eraseDays: () => call("DELETE", "/api/days"),
   putGoals: (goals) => call("PUT", "/api/goals", goals),
   importAll: (doc) => call("POST", "/api/import", doc),
+
+  settings: () => call("GET", "/api/settings"),
+  putPrefs: (prefs) => call("PUT", "/api/prefs", prefs),
+  createToken: (name) => call("POST", "/api/tokens", { name }),
+  revealToken: (id) => call("GET", `/api/tokens/${id}`),
+  renameToken: (id, name) => call("PUT", `/api/tokens/${id}`, { name }),
+  rotateToken: (id) => call("POST", `/api/tokens/${id}/rotate`, {}),
+  deleteToken: (id) => call("DELETE", `/api/tokens/${id}`),
+  changePassword: (current, next) => call("PUT", "/api/password", { current, next }),
+  revokeSessions: () => call("POST", "/api/sessions/revoke", {}),
 };
 
 /** Check a file before sending it: it must look like an export. */
@@ -41,10 +51,6 @@ export function readExport(text) {
   return { days: s.days, goals: { ...DEFAULT_GOALS, ...s.goals } };
 }
 
-/* A per-browser choice, not data: "don't show me the sample days". */
-const NODEMO = "ash-health-nodemo";
-export const demoDismissed = () => { try { return localStorage.getItem(NODEMO) === "1"; } catch { return false; } };
-export const dismissDemo = () => { try { localStorage.setItem(NODEMO, "1"); } catch { /* fine */ } };
 
 /* ── sample data ───────────────────────────────────────────────────────── */
 

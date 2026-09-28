@@ -12,11 +12,23 @@
      DELETE /api/days                 session  erase every day
      PUT  /api/goals                  session
      POST /api/import                 session  replace all days (+ goals)
+
+   Settings — everything that used to mean editing Railway variables:
+     GET  /api/settings               session  tokens (masked), password source, prefs
+     PUT  /api/prefs                  session  dashboard defaults
+     POST /api/tokens                 session  new upload token { name }
+     GET  /api/tokens/:id             session  reveal one token
+     PUT  /api/tokens/:id             session  rename { name }
+     POST /api/tokens/:id/rotate      session  new value, same name
+     DELETE /api/tokens/:id           session
+     PUT  /api/password               session  { current, next }
+     POST /api/sessions/revoke        session  sign out every other device
    ────────────────────────────────────────────────────────────────────────── */
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
-import { COOKIE, createAuth, readCookies, limiter } from "./auth.mjs";
+import { randomUUID } from "node:crypto";
+import { COOKIE, TTL_SECONDS, sessions, sameSecret, hashPassword, checkHash, newToken, readCookies, limiter } from "./auth.mjs";
 import { parseIngest, cleanDay } from "./apple.mjs";
 import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
 
@@ -42,10 +54,37 @@ const HEADERS = {
   ].join("; "),
 };
 
-export function createApp({ store, root, password, secret, ingestToken, requireAuth }) {
-  const auth = createAuth({ password, secret, ingestToken });
+/** What a dashboard default may be set to. */
+const PREFS = {
+  weightRange: ["30", "90", "all"],
+  trendRange: [7, 30, 90],
+  trendMetric: ["calories", "protein", "carbs", "fat", "fiber"],
+  sleepN: [7, 14],
+  showSample: [true, false],
+};
+export const DEFAULT_PREFS = { weightRange: "90", trendRange: 30, trendMetric: "calories", sleepN: 7, showSample: true };
+
+/**
+ * `password` and `ingestToken` are the Railway variables: the starting
+ * password and a fallback upload token. Settings saved in the database win.
+ */
+export async function createApp({ store, root, password, secret, ingestToken, requireAuth }) {
+  const sess = sessions(secret);
   const loginLimit = limiter(5, 60_000);
-  const open = !password && !requireAuth; // local use with no password set
+  const pwLimit = limiter(5, 60_000);
+
+  // Held in memory (one instance) and written through to the database.
+  const cfg = {
+    auth: (await store.getMeta("auth")) || null, // { salt, hash, epoch, updatedAt }
+    tokens: (await store.getMeta("tokens")) || [], // [{ id, name, token, createdAt, lastUsedAt, lastSync }]
+    prefs: { ...DEFAULT_PREFS, ...((await store.getMeta("prefs")) || {}) },
+  };
+  const epoch = () => cfg.auth?.epoch ?? 0;
+  const hasPassword = () => !!(cfg.auth?.hash || password);
+  const isOpen = () => !hasPassword() && !requireAuth; // local use with no password anywhere
+  const checkPassword = (given) => (cfg.auth?.hash ? checkHash(given, cfg.auth) : !!password && sameSecret(given, password, secret));
+  const saveAuth = async (next) => { cfg.auth = next; await store.setMeta("auth", next); };
+  const saveTokens = async () => store.setMeta("tokens", cfg.tokens);
 
   async function handle(req, res) {
     const url = new URL(req.url, "http://x");
@@ -56,15 +95,19 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
       await store.ping();
       return send(res, 200, "ok", "text/plain");
     }
-    if (!password && requireAuth) {
+    if (!hasPassword() && requireAuth) {
       return send(res, 503, "APP_PASSWORD is not set. Add it in Railway → Variables, then redeploy.", "text/plain");
     }
 
     if (path === "/api/ingest") {
       if (method !== "POST") return json(res, 405, { error: "POST only" });
       const given = bearer(req) ?? req.headers["x-ingest-token"] ?? url.searchParams.get("token");
-      if (!ingestToken) return json(res, 503, { error: "INGEST_TOKEN is not set on the server" });
-      if (!auth.checkIngest(given)) return json(res, 401, { error: "Bad or missing token" });
+      if (!cfg.tokens.length && !ingestToken) return json(res, 503, { error: "No upload token yet: create one in Settings → Apple Health" });
+      // Check every token, so the time taken doesn't say which one matched.
+      let match = null;
+      for (const t of cfg.tokens) if (sameSecret(given, t.token, secret) && !match) match = t;
+      const envMatch = !!ingestToken && sameSecret(given, ingestToken, secret);
+      if (!given || (!match && !envMatch)) return json(res, 401, { error: "Bad or missing token" });
       let days;
       try {
         days = parseIngest(await readJson(req));
@@ -75,7 +118,12 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
       if (keys.length) await store.mergeDays(days);
       const source = /auto.?export/i.test(req.headers["user-agent"] || "") ? "Health Auto Export" : "Apple Health";
       const lastSync = { at: new Date().toISOString(), source, days: keys.length, from: keys[0] ?? null, to: keys.at(-1) ?? null };
-      await store.setMeta("lastSync", lastSync);
+      await store.setMeta("lastSync", { ...lastSync, token: match ? match.name : "Railway variable" });
+      if (match) {
+        match.lastUsedAt = lastSync.at;
+        match.lastSync = lastSync;
+        await saveTokens();
+      }
       return json(res, 200, { ok: true, ...lastSync });
     }
 
@@ -83,12 +131,13 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
       if (method === "GET") return send(res, 200, loginPage(), "text/html; charset=utf-8");
       if (method === "POST") {
         const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
-        if (!loginLimit(ip)) return send(res, 429, loginPage("Too many tries. Wait a minute."), "text/html; charset=utf-8");
+        if (loginLimit.blocked(ip)) return send(res, 429, loginPage("Too many tries. Wait a minute."), "text/html; charset=utf-8");
         const form = new URLSearchParams(await readText(req, 10_000));
-        if (!auth.checkPassword(form.get("password"))) {
+        if (!checkPassword(form.get("password"))) {
+          loginLimit.fail(ip);
           return send(res, 401, loginPage("That's not it."), "text/html; charset=utf-8");
         }
-        res.setHeader("set-cookie", cookie(req, auth.issue(), auth.ttlSeconds));
+        res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
         return redirect(res, "/");
       }
     }
@@ -97,7 +146,7 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
       return redirect(res, "/login");
     }
 
-    const signedIn = open || auth.verify(readCookies(req.headers.cookie)[COOKIE]);
+    const signedIn = isOpen() || sess.verify(readCookies(req.headers.cookie)[COOKIE], epoch());
     if (!signedIn) {
       if (path.startsWith("/api/")) return json(res, 401, { error: "Signed out" });
       return redirect(res, "/login");
@@ -119,7 +168,14 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
   async function api(req, res, method, path) {
     if (path === "/api/state" && method === "GET") {
       const s = await store.getAll();
-      return json(res, 200, { days: s.days, goals: { ...DEFAULT_GOALS, ...(s.goals || {}) }, lastSync: s.lastSync, storage: store.kind, open });
+      return json(res, 200, {
+        days: s.days, goals: { ...DEFAULT_GOALS, ...(s.goals || {}) }, lastSync: s.lastSync,
+        prefs: cfg.prefs, storage: store.kind, open: isOpen(),
+      });
+    }
+    if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/prefs")
+      || path === "/api/password" || path === "/api/sessions/revoke") {
+      return settingsApi(req, res, method, path);
     }
     const m = path.match(/^\/api\/days\/(\d{4}-\d{2}-\d{2})$/);
     if (m && KEY_RE.test(m[1])) {
@@ -150,6 +206,91 @@ export function createApp({ store, root, password, secret, ingestToken, requireA
       await store.replaceDays(days);
       if (body.goals) await store.setMeta("goals", cleanGoals(body.goals));
       return json(res, 200, { ok: true, days: Object.keys(days).length });
+    }
+    return json(res, 404, { error: "Not found" });
+  }
+
+  async function settingsApi(req, res, method, path) {
+    const view = (t) => ({
+      id: t.id, name: t.name, preview: `${t.token.slice(0, 4)}…${t.token.slice(-4)}`,
+      createdAt: t.createdAt, lastUsedAt: t.lastUsedAt ?? null, lastSync: t.lastSync ?? null,
+    });
+    const findToken = (id) => cfg.tokens.find((t) => t.id === id);
+    const cleanName = (n) => String(n ?? "").trim().slice(0, 60) || "Upload token";
+
+    if (path === "/api/settings" && method === "GET") {
+      return json(res, 200, {
+        tokens: cfg.tokens.map(view),
+        envToken: !!ingestToken,
+        password: { set: hasPassword(), source: cfg.auth?.hash ? "settings" : password ? "railway" : "none", updatedAt: cfg.auth?.updatedAt ?? null },
+        prefs: cfg.prefs,
+        storage: store.kind,
+        open: isOpen(),
+      });
+    }
+    if (path === "/api/prefs" && method === "PUT") {
+      const body = await readJson(req);
+      const next = { ...cfg.prefs };
+      for (const [k, allowed] of Object.entries(PREFS)) {
+        if (!(k in (body || {}))) continue;
+        const v = allowed.find((a) => String(a) === String(body[k]));
+        if (v !== undefined) next[k] = v;
+      }
+      cfg.prefs = next;
+      await store.setMeta("prefs", next);
+      return json(res, 200, { ok: true, prefs: next });
+    }
+    if (path === "/api/tokens" && method === "POST") {
+      const body = await readJson(req);
+      if (cfg.tokens.length >= 20) return json(res, 400, { error: "That's plenty of tokens — delete one first" });
+      const t = { id: randomUUID(), name: cleanName(body?.name), token: newToken(), createdAt: new Date().toISOString() };
+      cfg.tokens.push(t);
+      await saveTokens();
+      return json(res, 200, { ok: true, ...view(t), token: t.token });
+    }
+    const tm = path.match(/^\/api\/tokens\/([\w-]+)(\/rotate)?$/);
+    if (tm) {
+      const t = findToken(tm[1]);
+      if (!t) return json(res, 404, { error: "No such token" });
+      if (tm[2] && method === "POST") {
+        t.token = newToken();
+        t.createdAt = new Date().toISOString();
+        t.lastUsedAt = null;
+        t.lastSync = null;
+        await saveTokens();
+        return json(res, 200, { ok: true, ...view(t), token: t.token });
+      }
+      if (!tm[2] && method === "GET") return json(res, 200, { ...view(t), token: t.token });
+      if (!tm[2] && method === "PUT") {
+        t.name = cleanName((await readJson(req))?.name);
+        await saveTokens();
+        return json(res, 200, { ok: true, ...view(t) });
+      }
+      if (!tm[2] && method === "DELETE") {
+        cfg.tokens = cfg.tokens.filter((x) => x !== t);
+        await saveTokens();
+        return json(res, 200, { ok: true });
+      }
+    }
+    if (path === "/api/password" && method === "PUT") {
+      const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+      if (pwLimit.blocked(ip)) return json(res, 429, { error: "Too many tries. Wait a minute." });
+      const body = await readJson(req);
+      if (hasPassword() && !checkPassword(body?.current)) {
+        pwLimit.fail(ip);
+        return json(res, 403, { error: "Current password is wrong" });
+      }
+      const next = String(body?.next ?? "");
+      if (next.length < 8) return json(res, 400, { error: "Use at least 8 characters" });
+      await saveAuth({ ...hashPassword(next), epoch: epoch() + 1, updatedAt: new Date().toISOString() });
+      // Every other device is signed out; this one gets a fresh cookie.
+      res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
+      return json(res, 200, { ok: true });
+    }
+    if (path === "/api/sessions/revoke" && method === "POST") {
+      await saveAuth({ ...(cfg.auth || {}), epoch: epoch() + 1 });
+      res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
+      return json(res, 200, { ok: true });
     }
     return json(res, 404, { error: "Not found" });
   }

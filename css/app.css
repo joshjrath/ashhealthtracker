@@ -466,8 +466,6 @@ small { font-size: 0.5em; font-weight: 700; letter-spacing: 0; margin-left: 3px;
 .cal .cell.perfect .sc { background: var(--salmon); color: #101012; }
 
 /* ── settings & forms ──────────────────────────────────────────────────── */
-.settings { margin-bottom: 14px; max-width: 980px; }
-.settings h2 { margin-top: 8px; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 14px; margin-bottom: 20px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--ink3); font-weight: 600; }
 .field .inp { display: flex; align-items: center; background: var(--sunk); border-radius: 12px; padding: 0 12px; border: 1px solid transparent; }
@@ -492,8 +490,7 @@ small { font-size: 0.5em; font-weight: 700; letter-spacing: 0; margin-left: 3px;
 .howto summary { cursor: pointer; font-weight: 700; font-size: 13.5px; }
 .howto ol { margin: 10px 0 2px; padding-left: 20px; color: var(--ink2); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 .howto code { background: #2C2C33; padding: 1px 6px; border-radius: 6px; font-size: 12px; }
-.apple .field { margin-top: 6px; }
-.signout { margin: 0 0 14px; }
+
 .hint b { color: var(--ink); }
 
 dialog {
@@ -511,6 +508,86 @@ dialog .field.wide { margin-bottom: 14px; max-width: 240px; }
 dialog .fields { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 10px; }
 dialog footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 dialog footer .danger { margin-right: auto; }
+
+/* ── settings ──────────────────────────────────────────────────────────
+   Laid out like a phone's Settings: an overview list that says where each
+   thing stands, then one card per section of label-left, control-right rows. */
+.settingsgrid { max-width: 920px; display: flex; flex-direction: column; gap: 14px; }
+.settingsgrid .card { margin: 0; }
+.overview { padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+.ov {
+  display: grid; grid-template-columns: 34px auto minmax(0, 1fr) 18px; align-items: center; gap: 14px;
+  width: 100%; padding: 10px 14px 10px 10px; border: 0; border-radius: 16px; background: none; cursor: pointer; text-align: left;
+}
+.ov:hover { background: var(--sunk); }
+.ov b { font-size: 14.5px; font-weight: 600; }
+.ov .val { color: var(--ink3); font-size: 13px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov .chev { color: var(--dim); display: grid; }
+.ov .chev svg { width: 16px; height: 16px; }
+.si {
+  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none;
+  background: color-mix(in srgb, var(--c) 16%, transparent); color: var(--c);
+}
+.si svg { width: 18px; height: 18px; }
+
+.sc { scroll-margin-top: 20px; }
+.sh { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 18px; }
+.sh h2 { margin: 4px 0 4px; }
+.sh p { margin: 0; color: var(--ink3); font-size: 13px; max-width: 640px; }
+.sc h3 { font-family: var(--ui); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink3); font-weight: 700; margin: 22px 0 10px; }
+.sc h3:first-of-type { margin-top: 4px; }
+.srow {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap;
+  padding: 14px 0; border-top: 1px solid var(--grid);
+}
+.sh + .srow, .sync + .srow { border-top: 0; padding-top: 0; }
+.srow .sl { display: flex; flex-direction: column; gap: 3px; min-width: 200px; flex: 1 1 260px; }
+.srow .sl b { font-size: 14px; font-weight: 600; }
+.srow .sl span { color: var(--ink3); font-size: 12.5px; }
+.srow .ctl { display: flex; justify-content: flex-end; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.srow .ctl:empty { display: none; }
+.srow form { margin: 0; }
+.srow code, .hint code, .sl code { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: #2C2C33; padding: 1px 6px; border-radius: 6px; color: var(--ink); }
+.hint.small { font-size: 12px; margin-top: 12px; }
+.err { color: #FF8F86; font-weight: 600; font-size: 13px; }
+
+.switch {
+  width: 46px; height: 28px; border-radius: 999px; border: 0; padding: 3px; cursor: pointer; flex: none;
+  background: #34343B; transition: background .15s ease; display: flex;
+}
+.switch i { width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .18s cubic-bezier(.2,.8,.2,1); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+.switch.on { background: var(--ok); }
+.switch.on i { transform: translateX(18px); }
+.switch:focus-visible, .ib:focus-visible, .ov:focus-visible, .tab:focus-visible { outline: 2px solid var(--salmon); outline-offset: 2px; }
+
+.urlrow { width: min(520px, 100%); }
+.srow .urlrow code { flex: 1; font-size: 12.5px; padding: 11px 14px; border-radius: 12px; background: var(--sunk); }
+.toks { display: flex; flex-direction: column; gap: 6px; }
+.tok {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap;
+  padding: 12px 12px 12px 16px; border-radius: 16px; background: var(--sunk);
+}
+.tk-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 260px; }
+.tk-main b { font-size: 14px; font-weight: 600; }
+.tk-main code { font: 600 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink2); overflow-wrap: anywhere; }
+.tk-main code.full { color: var(--ink); background: #2C2C33; padding: 6px 8px; border-radius: 8px; user-select: all; }
+.tk-main span { color: var(--ink3); font-size: 12px; }
+.tk-acts { display: flex; gap: 4px; }
+.ib {
+  width: 36px; height: 36px; border-radius: 11px; border: 0; cursor: pointer; display: grid; place-items: center;
+  background: transparent; color: var(--ink3);
+}
+.ib svg { width: 18px; height: 18px; }
+.ib:hover { background: var(--raised); color: var(--ink); }
+.ib.done { color: var(--ok); }
+.ib[data-act="token-delete"]:hover { color: #FF8F86; background: rgba(242,104,94,.12); }
+.empty-row { color: var(--ink3); font-size: 13px; padding: 14px 16px; border-radius: 16px; background: var(--sunk); }
+.newtok { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.newtok .inp { flex: 1 1 260px; display: flex; background: var(--sunk); border-radius: 12px; padding: 0 12px; border: 1px solid transparent; }
+.newtok .inp:focus-within { border-color: var(--salmon); }
+.newtok input { flex: 1; min-width: 0; border: 0; background: none; color: var(--ink); font: 600 14px var(--ui); padding: 11px 0; outline: 0; }
+.pwform { padding: 4px 0 14px; }
+.pwform .fields { margin-bottom: 12px; }
 
 /* ── tooltip ───────────────────────────────────────────────────────────── */
 #tip {
