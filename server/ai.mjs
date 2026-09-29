@@ -73,7 +73,7 @@ async function defaultClient(apiKey) {
   return { sdk: Anthropic, client: new Anthropic({ apiKey, maxRetries: 1, timeout: 60_000 }) };
 }
 
-/** The request body. Refusal fallbacks ("default") are opted into on Opus 5.5. */
+/** The request body. The default model also opts into refusal fallbacks ("default"). */
 export function estimateRequest(text, model = DEFAULT_MODEL) {
   const req = {
     model,

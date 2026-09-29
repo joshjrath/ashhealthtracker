@@ -54,7 +54,7 @@ Search looks in your saved foods first, then (most trusted first):
 | Open Food Facts — community-entered packaged foods | **Database** ("check against your label") | Free, no key; the server stays under 10 searches/minute |
 | Claude — only when you tap "Estimate with AI" | **Estimated**, with confidence, range and basis | About a cent or two per estimate on your Anthropic account; cached |
 
-Every result opens editable before anything is saved. Searches are cached for two weeks and any food you log is kept in My foods, so repeat foods need no lookup. Keys are set in **Settings → Food lookup** (stored in the database, never shown in full) or as the optional variables `USDA_API_KEY`, `FATSECRET_CLIENT_ID`, `FATSECRET_CLIENT_SECRET`, `ANTHROPIC_API_KEY`. AI estimates use Claude Opus 5.5 by default with refusal fallbacks enabled, so a declined request is retried on Anthropic's default fallback model.
+Every result opens editable before anything is saved. Searches are cached for two weeks and any food you log is kept in My foods, so repeat foods need no lookup. Keys are set in **Settings → Food lookup** (stored in the database, never shown in full) or as the optional variables `USDA_API_KEY`, `FATSECRET_CLIENT_ID`, `FATSECRET_CLIENT_SECRET`, `ANTHROPIC_API_KEY`. The model for AI estimates is chosen in the same place; the default has refusal fallbacks enabled, so a declined request is retried on Anthropic's default fallback model.
 
 ## Achievements
 
