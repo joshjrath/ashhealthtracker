@@ -1,67 +1,25 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   Apple Health → day log.
+   Apple Health → the "apple" bucket of each day.
 
    Apple Health has no web API: the data only leaves the iPhone when an app
    there sends it. Two senders are understood:
 
-   1. Health Auto Export (iOS app, "REST API" automation, JSON). Its payload:
+   1. Health Auto Export (iOS app, "REST API" automation, JSON):
         { data: { metrics: [{ name, units, data: [...] }], workouts: [...] } }
-      Works with "Aggregate data" on (one entry per day — recommended) or
-      off (one entry per sample).
-
-   2. Anything simpler, e.g. an iOS Shortcut, posting day fields directly:
-        { date: "2026-09-27", steps: 11240, weight: 162.8, ... }
+   2. Anything simpler, e.g. an iOS Shortcut:
+        { date: "2026-09-27", steps: 11240, activeKcal: 612, ... }
         { days: { "2026-09-27": { ... } } }   or an array of { date, ... }
 
-   Either way the result is { "YYYY-MM-DD": { field: value } } holding only
-   the fields the payload actually carried, so a merge never erases what
-   was logged by hand (creatine, say).
+   Only what js/sources.js allows from Apple is kept: steps, active
+   calories, exercise minutes, weight and workouts. Food and sleep are
+   manual-only on this site, so Apple's versions are dropped here and never
+   stored. Every metric name that arrives is reported back — accepted or
+   ignored — along with the fields each workout carried, so Settings can
+   show exactly what your phone is sending.
    ────────────────────────────────────────────────────────────────────────── */
+import { cleanApple, num } from "../js/sources.js";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^\d{1,2}:\d{2}$/;
-
-/** Fields a sender may set, and how to clean each. */
-const FIELDS = {
-  weight: (v) => round1(num(v)),
-  kcal: (v) => int(v),
-  protein: (v) => int(v),
-  carbs: (v) => int(v),
-  fat: (v) => int(v),
-  fiber: (v) => int(v),
-  steps: (v) => int(v),
-  sleepMins: (v) => int(v),
-  bed: (v) => (typeof v === "string" && TIME_RE.test(v.trim()) ? pad(v.trim()) : undefined),
-  wake: (v) => (typeof v === "string" && TIME_RE.test(v.trim()) ? pad(v.trim()) : undefined),
-  workout: (v) => bool(v),
-  creatine: (v) => bool(v),
-};
-
-function num(v) {
-  const n = typeof v === "string" ? Number(v.replace(/,/g, "")) : Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
-}
-const int = (v) => { const n = num(v); return n === undefined ? undefined : Math.round(n); };
-const round1 = (n) => (n === undefined ? undefined : Math.round(n * 10) / 10);
-const pad = (hhmm) => hhmm.padStart(5, "0");
-function bool(v) {
-  if (typeof v === "boolean") return v;
-  if (v === 1 || v === "1" || v === "true" || v === "yes") return true;
-  if (v === 0 || v === "0" || v === "false" || v === "no") return false;
-  return undefined;
-}
-
-/** Keep only known fields with valid values. */
-export function cleanDay(raw) {
-  const out = {};
-  if (!raw || typeof raw !== "object") return out;
-  for (const [k, fix] of Object.entries(FIELDS)) {
-    if (!(k in raw)) continue;
-    const v = fix(raw[k]);
-    if (v !== undefined) out[k] = v;
-  }
-  return out;
-}
 
 /* ── Apple's timestamps ────────────────────────────────────────────────── */
 
@@ -84,131 +42,153 @@ export function parseStamp(s) {
   return { date, hour: Number(hh), time: `${hh}:${mm}`, ms };
 }
 
-/** The morning a sleep sample belongs to: anything from 20:00 counts toward tomorrow. */
-function nightOf(stamp) {
-  if (stamp.hour < 20) return stamp.date;
-  const d = new Date(`${stamp.date}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
 /* ── Health Auto Export ────────────────────────────────────────────────── */
 
-/** Metric names as the app writes them, including older and alternate spellings. */
+/** Metric names as the app writes them (and older spellings) → apple fields. */
 const SUMS = {
   step_count: "steps",
   steps: "steps",
-  dietary_energy: "kcal",
-  dietary_energy_consumed: "kcal",
-  protein: "protein",
-  dietary_protein: "protein",
-  carbohydrates: "carbs",
-  dietary_carbohydrates: "carbs",
-  total_fat: "fat",
-  dietary_fat_total: "fat",
-  fiber: "fiber",
-  dietary_fiber: "fiber",
+  active_energy: "activeKcal",
+  active_energy_burned: "activeKcal",
+  apple_exercise_time: "exerciseMin",
+  exercise_time: "exerciseMin",
 };
 const WEIGHTS = new Set(["weight_body_mass", "body_mass", "weight"]);
-const SLEEPS = new Set(["sleep_analysis", "sleep"]);
-const ASLEEP = /^(asleep|core|deep|rem|asleepcore|asleepdeep|asleeprem|asleepunspecified)$/i;
 
-function toPounds(qty, units) {
-  return /^kg$/i.test(units || "") ? qty * 2.20462262 : qty;
-}
-function toKcal(qty, units) {
-  return /^kj$/i.test(units || "") ? qty / 4.184 : qty;
-}
+const qty = (x) => (typeof x === "number" ? num(x) : x && typeof x === "object" && !Array.isArray(x) ? num(x.qty) : undefined);
+const unitsOf = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x.units : undefined);
+const toKcal = (v, units) => (/^kj$/i.test(units || "") ? v / 4.184 : v);
+const toPounds = (v, units) => (/^kg$/i.test(units || "") ? v * 2.20462262 : v);
 
-function sleepEntries(metric, put) {
-  const byNight = new Map();
-  for (const e of metric.data || []) {
-    if (e.sleepStart && e.sleepEnd) {
-      // Aggregated: one summary per night.
-      const start = parseStamp(e.sleepStart), end = parseStamp(e.sleepEnd);
-      if (!start || !end) continue;
-      const hours = num(e.totalSleep ?? e.asleep);
-      put(end.date, { bed: start.time, wake: end.time, ...(hours ? { sleepMins: Math.round(hours * 60) } : {}) });
-      continue;
-    }
-    // Per sample: stage segments with a start, an end and a stage name.
-    const start = parseStamp(e.startDate ?? e.start), end = parseStamp(e.endDate ?? e.end);
-    if (!start || !end) continue;
-    const stage = String(e.value ?? e.stage ?? "Asleep").replace(/\s+/g, "");
-    if (!ASLEEP.test(stage)) continue;
-    if (end.hour >= 14 && end.hour < 20 && start.hour >= 12) continue; // an afternoon nap
-    const night = nightOf(start);
-    const n = byNight.get(night) || { bed: start, wake: end, mins: 0 };
-    if ((start.ms ?? 0) < (n.bed.ms ?? 0)) n.bed = start;
-    if ((end.ms ?? 0) > (n.wake.ms ?? 0)) n.wake = end;
-    if (start.ms != null && end.ms != null) n.mins += (end.ms - start.ms) / 60000;
-    byNight.set(night, n);
+/** One workout as the app sends it → the few fields worth keeping. */
+export function parseWorkout(w) {
+  const st = parseStamp(w?.start ?? w?.startDate ?? w?.date);
+  if (!st) return null;
+  const en = parseStamp(w.end ?? w.endDate);
+  let durationMin;
+  if (st.ms != null && en?.ms != null && en.ms > st.ms) durationMin = (en.ms - st.ms) / 60000;
+  else {
+    const d = qty(w.duration);
+    if (d !== undefined) durationMin = d > 300 ? d / 60 : d; // seconds in current exports, minutes in some old ones
   }
-  for (const [night, n] of byNight) {
-    put(night, { bed: n.bed.time, wake: n.wake.time, ...(n.mins > 0 ? { sleepMins: Math.round(n.mins) } : {}) });
+  let kcal = qty(w.activeEnergyBurned) ?? qty(w.activeEnergy);
+  let kcalUnits = unitsOf(w.activeEnergyBurned) ?? unitsOf(w.activeEnergy);
+  if (kcal === undefined && Array.isArray(w.activeEnergy)) {
+    kcal = w.activeEnergy.reduce((s, e) => s + (num(e?.qty) ?? 0), 0) || undefined;
+    kcalUnits = w.activeEnergy[0]?.units;
   }
+  const type = String(w.name ?? w.workoutActivityType ?? w.type ?? "Workout").replace(/^HKWorkoutActivityType/, "").trim() || "Workout";
+  return {
+    type,
+    start: `${st.date}T${st.time}`,
+    end: en ? `${en.date}T${en.time}` : undefined,
+    durationMin,
+    kcal: kcal !== undefined ? toKcal(kcal, kcalUnits) : undefined,
+    distance: qty(w.distance),
+    distanceUnit: unitsOf(w.distance),
+    avgHR: qty(w.avgHeartRate) ?? qty(w.heartRate?.avg) ?? qty(w.averageHeartRate),
+    maxHR: qty(w.maxHeartRate) ?? qty(w.heartRate?.max),
+    indoor: typeof w.isIndoor === "boolean" ? w.isIndoor : undefined,
+  };
 }
 
 export function fromHealthAutoExport(payload) {
   const root = payload?.data ?? payload;
-  const out = {};
-  const put = (key, fields) => {
-    if (!KEY_RE.test(key)) return;
-    out[key] = { ...(out[key] || {}), ...fields };
-  };
-
+  const report = { accepted: {}, ignored: {}, workoutFields: {}, workouts: 0 };
   const sums = {}; // key → field → total
   const weights = {}; // key → { t, v }
+  const workouts = {}; // key → [workout]
+
   for (const metric of root?.metrics || []) {
     const name = String(metric?.name || "").toLowerCase();
-    if (SLEEPS.has(name)) { sleepEntries(metric, put); continue; }
+    const count = Array.isArray(metric?.data) ? metric.data.length : 0;
     const field = SUMS[name];
     const isWeight = WEIGHTS.has(name);
-    if (!field && !isWeight) continue;
+    if (!field && !isWeight) {
+      report.ignored[name] = (report.ignored[name] || 0) + count;
+      continue;
+    }
+    report.accepted[name] = (report.accepted[name] || 0) + count;
     for (const e of metric.data || []) {
       const st = parseStamp(e.date ?? e.startDate);
-      const qty = num(e.qty ?? e.Avg ?? e.avg);
-      if (!st || qty === undefined) continue;
+      const v = num(e.qty ?? e.Avg ?? e.avg);
+      if (!st || v === undefined) continue;
       if (isWeight) {
         const t = st.ms ?? 0;
-        if (!weights[st.date] || t >= weights[st.date].t) weights[st.date] = { t, v: toPounds(qty, metric.units) };
+        if (!weights[st.date] || t >= weights[st.date].t) weights[st.date] = { t, v: toPounds(v, metric.units) };
       } else {
-        const v = field === "kcal" ? toKcal(qty, metric.units) : qty;
-        (sums[st.date] ||= {})[field] = (sums[st.date][field] || 0) + v;
+        const add = field === "activeKcal" ? toKcal(v, metric.units) : v;
+        (sums[st.date] ||= {})[field] = (sums[st.date][field] || 0) + add;
       }
     }
   }
-  for (const [key, fields] of Object.entries(sums)) put(key, cleanDay(fields));
-  for (const [key, w] of Object.entries(weights)) put(key, cleanDay({ weight: w.v }));
 
   for (const w of root?.workouts || []) {
-    const st = parseStamp(w.start ?? w.startDate ?? w.date);
-    if (st) put(st.date, { workout: true });
+    for (const k of Object.keys(w || {})) report.workoutFields[k] = (report.workoutFields[k] || 0) + 1;
+    const p = parseWorkout(w);
+    if (!p) continue;
+    report.workouts += 1;
+    (workouts[p.start.slice(0, 10)] ||= []).push(p);
   }
-  return out;
+
+  const days = {};
+  const keys = new Set([...Object.keys(sums), ...Object.keys(weights), ...Object.keys(workouts)]);
+  for (const key of keys) {
+    if (!KEY_RE.test(key)) continue;
+    const d = cleanApple({
+      ...(sums[key] || {}),
+      ...(weights[key] ? { weight: weights[key].v } : {}),
+      ...(workouts[key] ? { workouts: dedupe(workouts[key]) } : {}),
+    });
+    if (Object.keys(d).length) days[key] = d;
+  }
+  return { days, report };
+}
+
+function dedupe(list) {
+  const seen = new Map();
+  for (const w of list) seen.set(`${w.start}|${w.type}`, w);
+  return [...seen.values()].sort((a, b) => (a.start < b.start ? -1 : 1));
 }
 
 /* ── entry point ───────────────────────────────────────────────────────── */
 
-/** Any accepted payload → { key: fields }. Throws on a shape it doesn't know. */
+const GENERIC_ALIASES = { kcalActive: "activeKcal", active: "activeKcal", exercise: "exerciseMin", workout: "workoutFlag" };
+
+/**
+ * Any accepted payload → { days: { key: appleFields }, report }.
+ * Throws on a shape it doesn't know.
+ */
 export function parseIngest(body) {
   if (!body || typeof body !== "object") throw new Error("Expected a JSON object");
 
   const hae = body.data && (Array.isArray(body.data.metrics) || Array.isArray(body.data.workouts));
   if (hae || Array.isArray(body.metrics)) return fromHealthAutoExport(body);
 
-  const out = {};
+  const days = {};
+  const report = { accepted: {}, ignored: {}, workoutFields: {}, workouts: 0 };
   const add = (key, raw) => {
     const k = typeof key === "string" ? parseStamp(key)?.date : null;
-    if (!k || !KEY_RE.test(k)) return;
-    const d = cleanDay(raw);
-    if (Object.keys(d).length) out[k] = { ...(out[k] || {}), ...d };
+    if (!k || !KEY_RE.test(k) || !raw || typeof raw !== "object") return;
+    const renamed = {};
+    for (const [f, v] of Object.entries(raw)) {
+      if (f === "date") continue;
+      renamed[GENERIC_ALIASES[f] || f] = v;
+    }
+    if (Array.isArray(renamed.workouts)) renamed.workouts = renamed.workouts.map((w) => parseWorkout(w)).filter(Boolean);
+    const d = cleanApple(renamed);
+    for (const f of Object.keys(renamed)) {
+      const bucket = f in d ? report.accepted : report.ignored;
+      bucket[f] = (bucket[f] || 0) + 1;
+    }
+    if (d.workouts) report.workouts += d.workouts.length;
+    if (Object.keys(d).length) days[k] = { ...(days[k] || {}), ...d };
   };
   if (Array.isArray(body)) body.forEach((d) => add(d?.date, d));
   else if (body.days && typeof body.days === "object" && !Array.isArray(body.days)) {
     for (const [k, d] of Object.entries(body.days)) add(k, d);
   } else if (Array.isArray(body.days)) body.days.forEach((d) => add(d?.date, d));
   else if (body.date) add(body.date, body);
-  else throw new Error("Unrecognised payload: send Health Auto Export JSON, or { date, steps, weight, ... }");
-  return out;
+  else throw new Error("Unrecognised payload: send Health Auto Export JSON, or { date, steps, activeKcal, ... }");
+  return { days, report };
 }

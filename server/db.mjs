@@ -3,7 +3,8 @@
    file on disk — enough to run and test locally without a database.
 
    Both keep the same shape:
-     days  key "YYYY-MM-DD" → { weight, kcal, ... }
+     days  key "YYYY-MM-DD" → { manual: {...}, apple: {...}, legacy: {...} }
+           (see js/sources.js — each source writes only its own bucket)
      meta  "goals", "lastSync", "prefs", "tokens", "auth", "sessionSecret"
    ────────────────────────────────────────────────────────────────────────── */
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -62,31 +63,41 @@ async function openPg(url) {
     },
     async putDay(key, data) {
       await pool.query(
-        `insert into days (key, data) values ($1, $2)
+        `insert into days (key, data) values ($1, $2::jsonb)
          on conflict (key) do update set data = excluded.data, updated_at = now()`,
-        [key, data],
+        [key, JSON.stringify(data)],
       );
     },
     async deleteDay(key) {
       await pool.query("delete from days where key = $1", [key]);
     },
-    /** Field-level merge: incoming fields win, everything else on the day stays. */
-    async mergeDays(days) {
+    /** Apple's fields merge into the day's "apple" bucket; manual and legacy are untouched. */
+    async mergeApple(days) {
       await tx(async (c) => {
-        for (const [key, data] of Object.entries(days)) {
+        for (const [key, apple] of Object.entries(days)) {
           await c.query(
-            `insert into days (key, data) values ($1, $2)
-             on conflict (key) do update set data = days.data || excluded.data, updated_at = now()`,
-            [key, data],
+            `insert into days (key, data) values ($1, jsonb_build_object('manual', '{}'::jsonb, 'apple', $2::jsonb))
+             on conflict (key) do update set
+               data = jsonb_set(days.data, '{apple}', coalesce(days.data->'apple', '{}'::jsonb) || $2::jsonb, true),
+               updated_at = now()`,
+            [key, JSON.stringify(apple)],
           );
         }
       });
+    },
+    /** Replaces the day's "manual" bucket only; Apple's data for that day stays. */
+    async putManual(key, manual) {
+      await pool.query(
+        `insert into days (key, data) values ($1, jsonb_build_object('manual', $2::jsonb, 'apple', '{}'::jsonb))
+         on conflict (key) do update set data = jsonb_set(days.data, '{manual}', $2::jsonb, true), updated_at = now()`,
+        [key, JSON.stringify(manual)],
+      );
     },
     async replaceDays(days) {
       await tx(async (c) => {
         await c.query("delete from days");
         for (const [key, data] of Object.entries(days)) {
-          await c.query("insert into days (key, data) values ($1, $2)", [key, data]);
+          await c.query("insert into days (key, data) values ($1, $2::jsonb)", [key, JSON.stringify(data)]);
         }
       });
     },
@@ -136,8 +147,15 @@ async function openFile(file) {
     },
     async putDay(key, data) { doc.days[key] = data; await flush(); },
     async deleteDay(key) { delete doc.days[key]; await flush(); },
-    async mergeDays(days) {
-      for (const [key, data] of Object.entries(days)) doc.days[key] = { ...(doc.days[key] || {}), ...data };
+    async mergeApple(days) {
+      for (const [key, apple] of Object.entries(days)) {
+        const d = doc.days[key] || { manual: {}, apple: {} };
+        doc.days[key] = { ...d, apple: { ...(d.apple || {}), ...apple } };
+      }
+      await flush();
+    },
+    async putManual(key, manual) {
+      doc.days[key] = { ...(doc.days[key] || { apple: {} }), manual };
       await flush();
     },
     async replaceDays(days) { doc.days = { ...days }; await flush(); },

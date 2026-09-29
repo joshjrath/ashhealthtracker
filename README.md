@@ -12,27 +12,32 @@ npm test         # calculations, Apple Health parsing, and the server's auth and
 
 ## What's on it
 
-| Page | Visualizers |
+| Page | What it shows |
 |---|---|
-| **Today** | Daily score with the goals behind it · stat cards (weight, calories, protein, steps, sleep, workout, creatine) · calorie ring with the 1,900–2,100 success zone · macro rings with protein as the primary macro · calorie composition bar · today vs 14-day average · week-at-a-glance heatmap · streaks with best streak alongside · goal journey · weekly weight trend · steps ring with a 7-day bar chart · sleep timeline |
-| **Weight** | Weight journey: daily weigh-ins, 7-day average and the goal line, with 30D / 90D / All ranges · goal journey · weekly trend |
-| **Nutrition** | Calorie ring, macros, today vs average · 7D / 30D / 90D trends for calories, protein, carbs, fat and fiber against their targets |
-| **Activity & sleep** | Steps · bedtime-to-wake timeline for 7 or 14 nights with average bedtime, wake time and bedtime spread · heatmap and streaks |
-| **Calendar** | Month grid. Each day shows kcal, protein, steps, weight and a goal count, and is shaded by how many goals it hit. Click a day to edit it. |
-| **Settings** | Laid out like a phone's Settings: goals, Apple Health (sync status, upload URL, upload tokens), dashboard defaults, password and sign-out, and backup/import/erase. Anything that used to mean editing Railway variables is here. |
+| **Today** | Goals hit as *5/8* (percentage second) with a **Finish today** list of what's left per goal · stat cards · calorie ring with the success zone · macros · today vs your 14-day average · week grid (hit / missed / no data / in progress) · streaks · **this week** review (biggest win, biggest gap, change vs last week) · **consistency** (last 7 / 30 / previous 30 days) · **insights** once there's enough history · goal journey · weekly weight |
+| **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one |
+| **Nutrition** | Trends from your own logs only; averages use **complete** food days, partial days are drawn faintly and left out |
+| **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts |
+| **Sleep** | Bedtime → wake bars from your own logs, with your target window behind them, and average bedtime, wake, spread and nights on schedule |
+| **Calendar** | Each day shaded by goals hit; days with no data look empty rather than failed. Click a day for everything logged that day and where each number came from. |
+| **Settings** | Goals, Apple Health (sync status, upload tokens), data sources (and every field your phone has sent), dashboard defaults, password, backup, and the review of older entries |
 
-The daily score is simply the number of tracked goals met, never an invented health metric. The goal list sits right under the percentage.
+## Where each number comes from
 
-## Apple Health / Apple Watch
+Every stored day keeps each source in its own bucket, `{ manual, apple, legacy }`, and `js/sources.js` decides which buckets each metric may read:
 
-Apple Health has no web API; the data only leaves the iPhone when an app there sends it. Your Watch writes to Health on the phone, and one of these posts it to `https://<your-site>/api/ingest` with the header `Authorization: Bearer <token>`. Create the token in **Settings → Apple Health**. Give each app its own token so any one can be renamed, replaced or revoked there without touching the others. (An `INGEST_TOKEN` variable also works, as a fallback.)
+| Metric | Source |
+|---|---|
+| Calories, protein, carbs, fat, fiber | **Manual only** |
+| Sleep (bedtime → wake) | **Manual only** |
+| Creatine | Manual only |
+| Steps, active calories, exercise minutes | Apple Health, or a value you type (yours wins that day) |
+| Workouts | Apple Health's workouts, or your "worked out" tick |
+| Weight | A weigh-in you type, else Apple Health's |
 
-- **Health Auto Export – JSON+CSV** (recommended). Use a REST API automation in JSON format, with Aggregate data on and Summarize by Day. Pick Step Count, Weight & Body Mass, Dietary Energy, Protein, Carbohydrates, Total Fat, Fiber and Sleep Analysis, and add a Workouts automation too. Run it hourly over the last 7 days, and do one manual export over a long range to backfill.
-- **An iOS Shortcut** (free). Post `{ "date": "2026-09-27", "steps": 11240, "weight": 162.8, "sleepMins": 450, "workout": true }`. Any of `weight kcal protein carbs fat fiber steps bed wake sleepMins workout creatine` works.
+Apple Health can't reach a manual-only metric: `/api/ingest` drops food and sleep before anything is stored, and the Apple bucket only accepts the fields above. Days saved before this existed were moved to `legacy` and their food and sleep are left out of every number until you sort them in **Settings → Review older entries**.
 
-Each sync merges field by field. Apple's numbers replace that day's copy of the same fields, and anything Apple doesn't send (creatine, hand-typed notes) stays. Calories and macros only arrive if your food app (MyFitnessPal, Lose It!, Cronometer…) writes them to Apple Health. Settings shows when the last sync landed and which token sent it.
-
-Sleep belongs to the morning you woke up. For Sunday's entry, the bedtime is Saturday night. When Apple sends measured time asleep, that is used instead of bedtime → wake.
+**Missing is never zero.** Each goal is *hit*, *missed*, *no data* or (today) *in progress*. A hit is final as soon as it happens. A miss needs proof: a finished day, a complete food log, or a value that can't come back into range. Averages skip days without data and need at least 3 real observations. Adherence needs 10 judged goal-days. A goal date needs 14 weigh-ins over 3+ weeks and a real downward trend. Otherwise the page says "Not enough data yet".
 
 ## Deploy to Railway
 

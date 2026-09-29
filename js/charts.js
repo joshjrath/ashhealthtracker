@@ -214,8 +214,9 @@ export function trendChart(rows, { width, height = 280, color, target, zone, uni
     ? `<rect class="zoneband" x="${P.l}" width="${iw}" y="${y(zone[1]).toFixed(1)}" height="${(y(zone[0]) - y(zone[1])).toFixed(1)}" style="fill:${color}"/>`
     : `<line class="target" x1="${P.l}" x2="${W - P.r}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}"/>`;
 
+  // Partial food days are drawn, faintly, but never feed the average.
   const avg = rows.map((_, i) => {
-    const win = rows.slice(Math.max(0, i - 6), i + 1).map((r) => r.v).filter((v) => v != null);
+    const win = rows.slice(Math.max(0, i - 6), i + 1).filter((r) => !r.partial).map((r) => r.v).filter((v) => v != null);
     return win.length >= 3 ? win.reduce((s, v) => s + v, 0) / win.length : null;
   });
   const path = (vs) => {
@@ -234,9 +235,12 @@ export function trendChart(rows, { width, height = 280, color, target, zone, uni
     const cx = x(i);
     const lab = (n - 1 - i) % every === 0
       ? `<text class="axis" x="${cx.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(row.key, n > 10))}</text>` : "";
-    const lines = [fmtDay(row.key), row.v != null ? `${fmtVal(row.v)} ${unit}` : "Not logged",
-      row.v != null ? (row.met ? "✓ On target" : "○ Off target") : "", avg[i] != null ? `7-day avg ${fmtVal(avg[i])} ${unit}` : ""];
-    const dot = row.v == null ? "" : row.met
+    const lines = [fmtDay(row.key), row.v != null ? `${fmtVal(row.v)} ${unit}${row.partial ? " so far" : ""}` : "No data",
+      row.partial ? "Partial log — not in averages" : row.v != null ? (row.met ? "✓ On target" : "○ Off target") : "",
+      avg[i] != null ? `7-day avg ${fmtVal(avg[i])} ${unit}` : ""];
+    const dot = row.v == null ? "" : row.partial
+      ? `<circle class="tdot part" cx="${cx.toFixed(1)}" cy="${y(row.v).toFixed(1)}" r="${dotR - 1.5}" style="stroke:${color}"/>`
+      : row.met
       ? `<circle class="tdot" cx="${cx.toFixed(1)}" cy="${y(row.v).toFixed(1)}" r="${dotR}" style="fill:${color}"/>`
       : `<circle class="tdot off" cx="${cx.toFixed(1)}" cy="${y(row.v).toFixed(1)}" r="${dotR - 0.75}" style="stroke:${color}"/>`;
     return `<g class="hit" ${tip(...lines)}>
@@ -247,7 +251,7 @@ export function trendChart(rows, { width, height = 280, color, target, zone, uni
 
   return `<svg class="plot trend" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Daily intake against target">
     ${grid}${ref}
-    <path class="tline" d="${path(rows.map((r) => r.v))}" style="stroke:${color}"/>
+    <path class="tline" d="${path(rows.map((r) => (r.partial ? null : r.v)))}" style="stroke:${color}"/>
     <path class="tavg" d="${path(avg)}" style="stroke:${color};--c:${color}"/>
     ${hits}
   </svg>`;
@@ -280,7 +284,7 @@ export function miniBars(rows, { color, target, fmtDay }) {
  * Each night as a bar from bedtime to wake on a shared 8pm→noon clock, so a
  * drifting bedtime is visible at a glance, not buried in an hours total.
  */
-export function sleepTimeline(nights, { width, color, fmtDay, fmtDur, fmtClock, targetMins }) {
+export function sleepTimeline(nights, { width, color, fmtDay, fmtDur, fmtClock, targetMins, target }) {
   const rowH = 34, P = { l: 74, r: 74, t: 30, b: 8 };
   const W = Math.max(300, width);
   const H = P.t + nights.length * rowH + P.b;
@@ -293,11 +297,20 @@ export function sleepTimeline(nights, { width, color, fmtDay, fmtDur, fmtClock, 
   let grid = hours.map((h, i) => `<line class="grid${h === 240 ? " mid" : ""}" x1="${x(h).toFixed(1)}" x2="${x(h).toFixed(1)}" y1="${P.t - 8}" y2="${H - P.b}"/>
     ${!narrow || i % 2 === 0 ? `<text class="axis" x="${x(h).toFixed(1)}" y="${P.t - 14}" text-anchor="middle">${labs[i]}</text>` : ""}`).join("");
 
+  // The target window, drawn behind everything so on-schedule nights sit inside it.
+  let band = "";
+  if (target && target.bed != null && target.wake != null) {
+    let tw = target.wake;
+    if (tw <= target.bed) tw += 1440;
+    const bx0 = x(target.bed), bx1 = x(tw);
+    band = `<rect class="sleeptarget" x="${bx0.toFixed(1)}" y="${P.t - 4}" width="${(bx1 - bx0).toFixed(1)}" height="${(H - P.b - P.t + 4).toFixed(1)}" rx="10" style="fill:${color}"/>
+      <text class="axis tgtlab" x="${((bx0 + bx1) / 2).toFixed(1)}" y="${H - P.b + 14}" text-anchor="middle">Target ${esc(fmtClock(target.bed))} – ${esc(fmtClock(target.wake))}</text>`;
+  }
   const rows = nights.map((nt, i) => {
     const cy = P.t + i * rowH + rowH / 2;
     const label = `<text class="axis rowlab${nt.today ? " on" : ""}" x="${P.l - 12}" y="${cy + 4}" text-anchor="end">${esc(fmtDay(nt.key, "short"))}</text>`;
     if (nt.bed == null) {
-      return `${label}<text class="axis" x="${P.l + 8}" y="${cy + 4}">Not logged</text>`;
+      return `${label}<text class="axis nolog" x="${P.l + 8}" y="${cy + 4}">Not logged</text>`;
     }
     let wake = nt.wake;
     if (wake <= nt.bed) wake += 1440;
@@ -311,6 +324,126 @@ export function sleepTimeline(nights, { width, color, fmtDay, fmtDur, fmtClock, 
     </g>`;
   }).join("");
 
-  return `<svg class="plot sleep" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Bedtime to wake, recent nights">
-    ${grid}${rows}</svg>`;
+  const Ht = band ? H + 18 : H;
+  return `<svg class="plot sleep" viewBox="0 0 ${W} ${Ht}" width="${W}" height="${Ht}" role="img" aria-label="Bedtime to wake, recent nights">
+    ${band}${grid}${rows}</svg>`;
+}
+
+/* ── fitness ───────────────────────────────────────────────────────────── */
+
+/**
+ * Concentric rings, Apple-style but in this site's hand: outermost first.
+ * Each ring is its own metric against its own goal.
+ */
+export function concentric(rings, { size = 220, stroke = 18, gap = 5 } = {}) {
+  const cx = size / 2;
+  const arcs = rings.map((r, i) => {
+    const rad = cx - stroke / 2 - 2 - i * (stroke + gap);
+    const c = 2 * Math.PI * rad;
+    const p = clamp(r.pct || 0, 0, 1);
+    const over = clamp((r.pct || 0) - 1, 0, 1);
+    const arc = (frac, cls) => `<circle cx="${cx}" cy="${cx}" r="${rad.toFixed(2)}" fill="none" stroke-width="${stroke}" class="arc${cls}"
+      style="stroke:${r.color};--len:${c.toFixed(2)};--c:${r.color};animation-delay:${i * 120}ms" stroke-linecap="round"
+      stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${(c * (1 - frac)).toFixed(2)}" transform="rotate(-90 ${cx} ${cx})"/>`;
+    return `<circle cx="${cx}" cy="${cx}" r="${rad.toFixed(2)}" fill="none" stroke-width="${stroke}" class="track" style="stroke:${r.color}"/>
+      ${p > 0 ? arc(p, "") : ""}${over > 0 ? arc(over, " over") : ""}`;
+  }).join("");
+  return `<svg class="ring" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img"
+    aria-label="${esc(rings.map((r) => `${r.label} ${Math.round((r.pct || 0) * 100)}%`).join(", "))}">${arcs}</svg>`;
+}
+
+/**
+ * A week of workouts as blocks on a day × time-of-day grid: each block is
+ * where the workout actually sat in the day, tall as it lasted, coloured
+ * by type, labelled with type, minutes and calories when there's room.
+ */
+export function workoutWeek(keys, byDay, { width, typeColor, fmtDay, today }) {
+  const P = { l: 40, r: 8, t: 36, b: 8 };
+  const W = Math.max(300, width);
+  // Zoom to the hours this week's workouts actually use (an hour either side, 6h at least),
+  // so a 30-minute session is tall enough to carry its own label.
+  let lo = Infinity, hi = -Infinity;
+  for (const k of keys) for (const w of byDay[k] || []) {
+    const s = minutesOf(w.start), e = s + (w.durationMin || 30);
+    lo = Math.min(lo, Math.floor(s / 60) * 60 - 60);
+    hi = Math.max(hi, Math.ceil(e / 60) * 60 + 60);
+  }
+  if (!Number.isFinite(lo)) { lo = 6 * 60; hi = 22 * 60; }
+  if (hi - lo < 360) { const mid = (lo + hi) / 2; lo = Math.floor((mid - 180) / 60) * 60; hi = lo + 360; }
+  lo = Math.max(0, lo); hi = Math.min(24 * 60, hi);
+  const ppm = Math.min(2.2, Math.max(0.6, 420 / (hi - lo))); // pixels per minute
+  const H = P.t + (hi - lo) * ppm + P.b;
+  const colW = (W - P.l - P.r) / keys.length;
+  const y = (m) => P.t + (m - lo) * ppm;
+  let grid = "";
+  const every = hi - lo > 720 ? 120 : 60;
+  for (let m = lo; m <= hi; m += every) {
+    const h = Math.floor(m / 60) % 24;
+    grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(m).toFixed(1)}" y2="${y(m).toFixed(1)}"/>
+      <text class="axis" x="${P.l - 8}" y="${(y(m) + 4).toFixed(1)}" text-anchor="end">${h % 12 === 0 ? 12 : h % 12}${h < 12 ? "a" : "p"}</text>`;
+  }
+  const heads = keys.map((k, i) => {
+    const cx = P.l + colW * (i + 0.5);
+    return `${i ? `<line class="grid" x1="${(P.l + colW * i).toFixed(1)}" x2="${(P.l + colW * i).toFixed(1)}" y1="${P.t - 6}" y2="${H - P.b}"/>` : ""}
+      <text class="axis${k === today ? " on" : ""}" x="${cx.toFixed(1)}" y="${P.t - 16}" text-anchor="middle">${esc(fmtDay(k, "short"))}</text>`;
+  }).join("");
+  const blocks = keys.map((k, i) => (byDay[k] || []).map((w) => {
+    const s = minutesOf(w.start), dur = w.durationMin || 30;
+    const x0 = P.l + colW * i + 4, bw = colW - 8;
+    const y0 = y(s), bh = Math.max(16, dur * ppm);
+    const c = typeColor(w.type);
+    const short = shortType(w.type);
+    const meta = [w.durationMin != null ? `${Math.round(w.durationMin)}m` : null, w.kcal != null ? `${Math.round(w.kcal)} kcal` : null].filter(Boolean).join(" · ");
+    const lines = [`${w.type}`, `${fmtDay(k)} · ${clock12(s)}–${clock12(s + dur)}`,
+      w.durationMin != null ? `${Math.round(w.durationMin)} min` : "", w.kcal != null ? `${Math.round(w.kcal)} active kcal` : "",
+      w.avgHR != null ? `Avg heart rate ${Math.round(w.avgHR)} bpm` : "",
+      w.distance != null ? `${w.distance} ${w.distanceUnit || ""}`.trim() : ""];
+    const label = bw > 54 && bh >= 30
+      ? `<text class="wlab" x="${(x0 + 8).toFixed(1)}" y="${(y0 + 15).toFixed(1)}">${esc(short)}</text>
+         ${bh >= 44 && meta ? `<text class="wmeta" x="${(x0 + 8).toFixed(1)}" y="${(y0 + 30).toFixed(1)}">${esc(meta)}</text>` : ""}`
+      : "";
+    return `<g class="hit wblock" ${tip(...lines)}>
+      <rect x="${x0.toFixed(1)}" y="${y0.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="7" style="fill:${c};--c:${c}"/>
+      <clipPath id="wc-${k}-${s}"><rect x="${x0.toFixed(1)}" y="${y0.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${bh.toFixed(1)}"/></clipPath>
+      <g clip-path="url(#wc-${k}-${s})">${label}</g>
+    </g>`;
+  }).join("")).join("");
+  return `<svg class="plot wweek" viewBox="0 0 ${W} ${H.toFixed(0)}" width="${W}" height="${H.toFixed(0)}" role="img" aria-label="Workouts this week by time of day">
+    ${grid}${heads}${blocks}</svg>`;
+}
+
+const minutesOf = (stamp) => { const [h, m] = stamp.slice(11, 16).split(":").map(Number); return h * 60 + m; };
+const clock12 = (m) => { const h = Math.floor(m / 60) % 24, mm = m % 60; return `${h % 12 === 0 ? 12 : h % 12}:${String(mm).padStart(2, "0")}${h < 12 ? "a" : "p"}`; };
+export function shortType(t) {
+  return String(t).replace(/^Traditional /, "").replace(/^Functional /, "").replace(/High Intensity Interval Training/, "HIIT");
+}
+
+/** Exercise minutes per week against the weekly target, one column per week. */
+export function weekBars(rows, { width, color, target, fmtLabel }) {
+  const P = { l: 40, r: 10, t: 14, b: 26 };
+  const W = Math.max(260, width), H = 170;
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const hi = Math.max(target * 1.2, ...rows.map((r) => r.v || 0)) || 1;
+  const step = niceStep(hi, 3);
+  const top = Math.ceil(hi / step) * step;
+  const y = (v) => P.t + ih - (v / top) * ih;
+  const band = iw / rows.length, bw = Math.min(24, band - 4);
+  let grid = "";
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+      <text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`;
+  }
+  const cols = rows.map((r, i) => {
+    const cx = P.l + band * (i + 0.5);
+    const lab = `<text class="axis${r.current ? " on" : ""}" x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(fmtLabel(r, i))}</text>`;
+    let bar = "";
+    if (r.v != null && r.v > 0) {
+      const t = y(r.v), x0 = cx - bw / 2, h = P.t + ih - t, rr = Math.min(4, h);
+      bar = `<path class="col${r.v < target ? " off" : ""}" style="fill:${color}" d="M${x0.toFixed(1)},${P.t + ih}V${(t + rr).toFixed(1)}Q${x0.toFixed(1)},${t.toFixed(1)} ${(x0 + rr).toFixed(1)},${t.toFixed(1)}H${(x0 + bw - rr).toFixed(1)}Q${(x0 + bw).toFixed(1)},${t.toFixed(1)} ${(x0 + bw).toFixed(1)},${(t + rr).toFixed(1)}V${P.t + ih}Z"/>`;
+    }
+    return `<g class="hit" ${tip(r.title, r.v != null ? `${Math.round(r.v)} exercise min` : "No data", r.sub || "")}>
+      <rect x="${(cx - band / 2).toFixed(1)}" y="${P.t}" width="${band.toFixed(1)}" height="${ih}" class="hitbg"/>${bar}${lab}</g>`;
+  }).join("");
+  return `<svg class="plot mini weekbars" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Exercise minutes per week">
+    ${grid}${cols}<line class="target" x1="${P.l}" x2="${W - P.r}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}"/></svg>`;
 }

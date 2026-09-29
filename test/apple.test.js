@@ -1,83 +1,78 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseIngest, parseStamp, cleanDay } from "../server/apple.mjs";
+import { parseIngest, parseStamp, parseWorkout } from "../server/apple.mjs";
 
-test("Health Auto Export, aggregated by day", () => {
-  const out = parseIngest({
-    data: {
-      metrics: [
-        { name: "step_count", units: "count", data: [
-          { date: "2026-09-26 00:00:00 -0700", qty: 9812, source: "Apple Watch|iPhone" },
-          { date: "2026-09-27 00:00:00 -0700", qty: 11240.4 },
-        ] },
-        { name: "weight_body_mass", units: "lb", data: [{ date: "2026-09-27 07:02:00 -0700", qty: 162.84 }] },
-        { name: "dietary_energy", units: "kcal", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 1984 }] },
-        { name: "protein", units: "g", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 158.2 }] },
-        { name: "carbohydrates", units: "g", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 186 }] },
-        { name: "total_fat", units: "g", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 64 }] },
-        { name: "fiber", units: "g", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 24 }] },
-        { name: "active_energy", units: "kcal", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 640 }] },
-        { name: "sleep_analysis", units: "hr", data: [{
-          date: "2026-09-27 00:00:00 -0700", totalSleep: 7.5, inBed: 8.1,
-          sleepStart: "2026-09-26 22:58:00 -0700", sleepEnd: "2026-09-27 07:00:00 -0700",
-        }] },
-      ],
-      workouts: [{ name: "Traditional Strength Training", start: "2026-09-27 17:30:00 -0700", end: "2026-09-27 18:20:00 -0700" }],
-    },
-  });
-  assert.deepEqual(out["2026-09-26"], { steps: 9812 });
-  assert.deepEqual(out["2026-09-27"], {
-    steps: 11240, kcal: 1984, protein: 158, carbs: 186, fat: 64, fiber: 24,
-    weight: 162.8, bed: "22:58", wake: "07:00", sleepMins: 450, workout: true,
-  });
+const HAE = {
+  data: {
+    metrics: [
+      { name: "step_count", units: "count", data: [
+        { date: "2026-09-26 00:00:00 -0700", qty: 9812 },
+        { date: "2026-09-27 00:00:00 -0700", qty: 11240.4 },
+      ] },
+      { name: "active_energy", units: "kcal", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 612.4 }] },
+      { name: "apple_exercise_time", units: "min", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 64 }] },
+      { name: "weight_body_mass", units: "lb", data: [{ date: "2026-09-27 07:02:00 -0700", qty: 162.84 }] },
+      // Manual-only on this site: must never get through.
+      { name: "dietary_energy", units: "kcal", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 1984 }] },
+      { name: "protein", units: "g", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 158 }] },
+      { name: "sleep_analysis", units: "hr", data: [{ date: "2026-09-27 00:00:00 -0700", totalSleep: 4.1,
+        sleepStart: "2026-09-26 22:58:00 -0700", sleepEnd: "2026-09-27 07:00:00 -0700" }] },
+      { name: "resting_heart_rate", units: "bpm", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 58 }] },
+    ],
+    workouts: [{
+      id: "A1", name: "Traditional Strength Training",
+      start: "2026-09-27 17:30:00 -0700", end: "2026-09-27 18:20:00 -0700", duration: 3000,
+      activeEnergyBurned: { qty: 318.6, units: "kcal" }, avgHeartRate: { qty: 128, units: "bpm" },
+      maxHeartRate: { qty: 161, units: "bpm" }, isIndoor: true,
+    }],
+  },
+};
+
+test("Health Auto Export: only fitness, steps, weight and workouts get in", () => {
+  const { days, report } = parseIngest(HAE);
+  assert.deepEqual(days["2026-09-26"], { steps: 9812 });
+  const d = days["2026-09-27"];
+  assert.equal(d.steps, 11240);
+  assert.equal(d.activeKcal, 612);
+  assert.equal(d.exerciseMin, 64);
+  assert.equal(d.weight, 162.8);
+  for (const f of ["kcal", "protein", "bed", "wake", "sleepMins"]) assert.equal(d[f], undefined, `${f} must not be imported`);
+  assert.deepEqual(d.workouts, [{
+    type: "Traditional Strength Training", start: "2026-09-27T17:30", end: "2026-09-27T18:20",
+    durationMin: 50, kcal: 318.6, avgHR: 128, maxHR: 161, indoor: true, id: "2026-09-27T17:30|Traditional Strength Training",
+  }]);
+  assert.deepEqual(Object.keys(report.ignored).sort(), ["dietary_energy", "protein", "resting_heart_rate", "sleep_analysis"]);
+  assert.deepEqual(Object.keys(report.accepted).sort(), ["active_energy", "apple_exercise_time", "step_count", "weight_body_mass"]);
+  assert.equal(report.workouts, 1);
+  assert.equal(report.workoutFields.avgHeartRate, 1);
 });
 
-test("Health Auto Export, per sample: sums, last weigh-in, kg and kJ", () => {
-  const out = parseIngest({
-    data: {
-      metrics: [
-        { name: "step_count", units: "count", data: [
-          { date: "2026-09-27 08:00:00 -0700", qty: 4000 },
-          { date: "2026-09-27 12:00:00 -0700", qty: 5000 },
-        ] },
-        { name: "weight_body_mass", units: "kg", data: [
-          { date: "2026-09-27 07:00:00 -0700", qty: 74 },
-          { date: "2026-09-27 21:00:00 -0700", qty: 74.5 },
-        ] },
-        { name: "dietary_energy", units: "kJ", data: [{ date: "2026-09-27 12:00:00 -0700", qty: 8368 }] },
-      ],
-    },
-  });
-  assert.deepEqual(out["2026-09-27"], { steps: 9000, kcal: 2000, weight: 164.2 });
+test("per-sample exports sum, keep the last weigh-in, convert kg and kJ", () => {
+  const { days } = parseIngest({ data: { metrics: [
+    { name: "step_count", units: "count", data: [{ date: "2026-09-27 08:00:00 -0700", qty: 4000 }, { date: "2026-09-27 12:00:00 -0700", qty: 5000 }] },
+    { name: "weight_body_mass", units: "kg", data: [{ date: "2026-09-27 07:00:00 -0700", qty: 74 }, { date: "2026-09-27 21:00:00 -0700", qty: 74.5 }] },
+    { name: "active_energy", units: "kJ", data: [{ date: "2026-09-27 12:00:00 -0700", qty: 2092 }] },
+  ] } });
+  assert.deepEqual(days["2026-09-27"], { steps: 9000, weight: 164.2, activeKcal: 500 });
 });
 
-test("sleep stage samples group into the night they end", () => {
-  const seg = (a, b, value) => ({ startDate: a, endDate: b, value, qty: 0 });
-  const out = parseIngest({
-    data: {
-      metrics: [{ name: "sleep_analysis", units: "hr", data: [
-        seg("2026-09-26 22:40:00 -0700", "2026-09-27 07:10:00 -0700", "In Bed"),
-        seg("2026-09-26 23:05:00 -0700", "2026-09-27 02:00:00 -0700", "Core"),
-        seg("2026-09-27 02:00:00 -0700", "2026-09-27 02:20:00 -0700", "Awake"),
-        seg("2026-09-27 02:20:00 -0700", "2026-09-27 06:50:00 -0700", "REM"),
-        seg("2026-09-27 15:00:00 -0700", "2026-09-27 15:40:00 -0700", "Core"), // nap
-      ] }],
-    },
-  });
-  assert.deepEqual(out, { "2026-09-27": { bed: "23:05", wake: "06:50", sleepMins: 445 } });
+test("workouts: duration from times, or seconds; energy from arrays; repeats collapse", () => {
+  assert.equal(parseWorkout({ name: "Run", start: "2026-09-27 06:00:00 -0700", duration: 1800 }).durationMin, 30);
+  assert.equal(parseWorkout({ name: "Run", start: "2026-09-27 06:00:00 -0700", activeEnergy: [{ qty: 100, units: "kcal" }, { qty: 50, units: "kcal" }] }).kcal, 150);
+  const w = { name: "Walk", start: "2026-09-27 12:00:00 -0700", end: "2026-09-27 12:30:00 -0700" };
+  const { days } = parseIngest({ data: { workouts: [w, w] } });
+  assert.equal(days["2026-09-27"].workouts.length, 1);
 });
 
-test("simple payloads from a Shortcut", () => {
-  assert.deepEqual(parseIngest({ date: "2026-09-27", steps: "11,240", weight: 162.84, workout: "yes", junk: 1 }),
-    { "2026-09-27": { steps: 11240, weight: 162.8, workout: true } });
-  assert.deepEqual(parseIngest({ days: { "2026-09-26": { kcal: 1950 } } }), { "2026-09-26": { kcal: 1950 } });
-  assert.deepEqual(parseIngest([{ date: "2026-09-25T08:00:00Z", fiber: 31 }]), { "2026-09-25": { fiber: 31 } });
+test("simple payloads: fitness allowed, food and sleep reported and dropped", () => {
+  const { days, report } = parseIngest({ date: "2026-09-27", steps: "11,240", activeKcal: 600, exercise: 61, kcal: 1900, bed: "23:00", wake: "07:00", workout: "yes" });
+  assert.deepEqual(days, { "2026-09-27": { steps: 11240, activeKcal: 600, exerciseMin: 61, workoutFlag: true } });
+  assert.deepEqual(Object.keys(report.ignored).sort(), ["bed", "kcal", "wake"]);
+  assert.deepEqual(parseIngest([{ date: "2026-09-25T08:00:00Z", steps: 31 }]).days, { "2026-09-25": { steps: 31 } });
   assert.throws(() => parseIngest({ hello: 1 }), /Unrecognised/);
 });
 
-test("cleaning keeps only known, valid fields", () => {
-  assert.deepEqual(cleanDay({ kcal: -5, protein: "abc", bed: "7:05", wake: "25:99x", creatine: false, extra: "x" }),
-    { bed: "07:05", creatine: false });
+test("timestamps keep the phone's wall clock", () => {
   assert.equal(parseStamp("2026-09-27 06:55:12 -0700").time, "06:55");
   assert.equal(parseStamp("2026-09-27 06:55:12 -0700").ms, Date.parse("2026-09-27T13:55:12Z"));
 });

@@ -7,11 +7,13 @@
      POST /logout
      POST /api/ingest                 token    Apple Health → merged into days
      GET  /api/state                  session  everything the page draws
-     PUT  /api/days/:key              session  save one day (replaces it)
-     DELETE /api/days/:key            session
+     PUT  /api/days/:key              session  save what you logged (the day's manual bucket)
+     DELETE /api/days/:key            session  clear what you logged; Apple's data stays
      DELETE /api/days                 session  erase every day
      PUT  /api/goals                  session
      POST /api/import                 session  replace all days (+ goals)
+     GET  /api/review                 session  pre-provenance food/sleep awaiting a decision
+     POST /api/review                 session  { keep: [keys], reject: [keys] }
 
    Settings — everything that used to mean editing Railway variables:
      GET  /api/settings               session  tokens (masked), password source, prefs
@@ -29,8 +31,9 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { COOKIE, TTL_SECONDS, sessions, sameSecret, hashPassword, checkHash, newToken, readCookies, limiter } from "./auth.mjs";
-import { parseIngest, cleanDay } from "./apple.mjs";
+import { parseIngest } from "./apple.mjs";
 import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
+import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "../js/sources.js";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BODY = 40 * 1024 * 1024; // a 90-day per-sample export can run to tens of MB
@@ -79,6 +82,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     tokens: (await store.getMeta("tokens")) || [], // [{ id, name, token, createdAt, lastUsedAt, lastSync }]
     prefs: { ...DEFAULT_PREFS, ...((await store.getMeta("prefs")) || {}) },
   };
+  await migrate(store);
   const epoch = () => cfg.auth?.epoch ?? 0;
   const hasPassword = () => !!(cfg.auth?.hash || password);
   const isOpen = () => !hasPassword() && !requireAuth; // local use with no password anywhere
@@ -108,16 +112,20 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       for (const t of cfg.tokens) if (sameSecret(given, t.token, secret) && !match) match = t;
       const envMatch = !!ingestToken && sameSecret(given, ingestToken, secret);
       if (!given || (!match && !envMatch)) return json(res, 401, { error: "Bad or missing token" });
-      let days;
+      let days, report;
       try {
-        days = parseIngest(await readJson(req));
+        ({ days, report } = parseIngest(await readJson(req)));
       } catch (e) {
         return json(res, e.status || 400, { error: e.message });
       }
       const keys = Object.keys(days).sort();
-      if (keys.length) await store.mergeDays(days);
+      if (keys.length) await store.mergeApple(days);
+      await recordSeen(report);
       const source = /auto.?export/i.test(req.headers["user-agent"] || "") ? "Health Auto Export" : "Apple Health";
-      const lastSync = { at: new Date().toISOString(), source, days: keys.length, from: keys[0] ?? null, to: keys.at(-1) ?? null };
+      const lastSync = {
+        at: new Date().toISOString(), source, days: keys.length, from: keys[0] ?? null, to: keys.at(-1) ?? null,
+        workouts: report.workouts, ignored: Object.keys(report.ignored),
+      };
       await store.setMeta("lastSync", { ...lastSync, token: match ? match.name : "Railway variable" });
       if (match) {
         match.lastUsedAt = lastSync.at;
@@ -180,12 +188,12 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     const m = path.match(/^\/api\/days\/(\d{4}-\d{2}-\d{2})$/);
     if (m && KEY_RE.test(m[1])) {
       if (method === "PUT") {
-        const day = cleanDay(await readJson(req));
-        await store.putDay(m[1], day);
-        return json(res, 200, { ok: true, day });
+        const manual = cleanManual(await readJson(req));
+        await store.putManual(m[1], manual);
+        return json(res, 200, { ok: true, manual });
       }
       if (method === "DELETE") {
-        await store.deleteDay(m[1]);
+        await store.putManual(m[1], {});
         return json(res, 200, { ok: true });
       }
     }
@@ -202,12 +210,43 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       const body = await readJson(req);
       if (!body || typeof body.days !== "object" || Array.isArray(body.days)) return json(res, 400, { error: "Not an Ash Health export" });
       const days = {};
-      for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanDay(d);
+      for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
       await store.replaceDays(days);
       if (body.goals) await store.setMeta("goals", cleanGoals(body.goals));
       return json(res, 200, { ok: true, days: Object.keys(days).length });
     }
+    if (path === "/api/review" && method === "GET") {
+      return json(res, 200, { items: reviewItems((await store.getAll()).days) });
+    }
+    if (path === "/api/review" && method === "POST") {
+      const body = await readJson(req);
+      const { days } = await store.getAll();
+      let done = 0;
+      for (const [list, keep] of [[body?.keep, true], [body?.reject, false]]) {
+        for (const key of Array.isArray(list) ? list : []) {
+          if (!KEY_RE.test(key) || !days[key]) continue;
+          await store.putDay(key, applyReview(days[key], keep));
+          done += 1;
+        }
+      }
+      return json(res, 200, { ok: true, done, items: reviewItems((await store.getAll()).days) });
+    }
     return json(res, 404, { error: "Not found" });
+  }
+
+  /** A running tally of every metric and workout field the phone has sent. */
+  async function recordSeen(report) {
+    const seen = (await store.getMeta("fieldsSeen")) || { metrics: {}, workoutFields: {} };
+    const at = new Date().toISOString();
+    for (const [kind, accepted] of [[report.accepted, true], [report.ignored, false]]) {
+      for (const [name, n] of Object.entries(kind)) {
+        const m = seen.metrics[name] || { samples: 0 };
+        seen.metrics[name] = { samples: m.samples + n, accepted, lastSeen: at };
+      }
+    }
+    for (const [f, n] of Object.entries(report.workoutFields)) seen.workoutFields[f] = (seen.workoutFields[f] || 0) + n;
+    seen.workouts = (seen.workouts || 0) + report.workouts;
+    await store.setMeta("fieldsSeen", seen);
   }
 
   async function settingsApi(req, res, method, path) {
@@ -226,6 +265,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         prefs: cfg.prefs,
         storage: store.kind,
         open: isOpen(),
+        fieldsSeen: (await store.getMeta("fieldsSeen")) || null,
       });
     }
     if (path === "/api/prefs" && method === "PUT") {
@@ -322,11 +362,40 @@ export async function createApp({ store, root, password, secret, ingestToken, re
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
 
+/**
+ * One-time move to per-source buckets (schema 2). Flat days go to "legacy",
+ * where food and sleep are held out of every calculation until reviewed.
+ * The two new fitness goals join the daily score.
+ */
+export async function migrate(store) {
+  if ((await store.getMeta("schema")) >= 2) return;
+  const { days } = await store.getAll();
+  const out = {};
+  let moved = 0;
+  for (const [k, d] of Object.entries(days)) {
+    const bucketed = d && typeof d === "object" && ("manual" in d || "apple" in d || "legacy" in d);
+    out[k] = bucketed ? d : migrateDay(d);
+    if (!bucketed) moved += 1;
+  }
+  if (moved) await store.replaceDays(out);
+  const goals = await store.getMeta("goals");
+  if (goals && Array.isArray(goals.tracked)) {
+    for (const id of ["active", "exercise"]) if (!goals.tracked.includes(id)) goals.tracked.push(id);
+    await store.setMeta("goals", goals);
+  }
+  await store.setMeta("schema", 2);
+  if (moved) console.log(`[web] Moved ${moved} days to per-source storage; food and sleep from before await review in Settings.`);
+}
+
 function cleanGoals(raw) {
   const out = { ...DEFAULT_GOALS };
   if (!raw || typeof raw !== "object") return out;
   for (const k of Object.keys(DEFAULT_GOALS)) {
     if (k === "tracked") continue;
+    if (typeof DEFAULT_GOALS[k] === "string") {
+      if (typeof raw[k] === "string" && /^\d{2}:\d{2}$/.test(raw[k])) out[k] = raw[k];
+      continue;
+    }
     const v = Number(raw[k]);
     if (Number.isFinite(v) && v >= 0) out[k] = v;
   }

@@ -65,8 +65,21 @@ test("ingest needs the token and merges without erasing hand-logged fields", asy
   assert.equal((await ok.json()).days, 1);
 
   const s = await (await fetch(`${base}/api/state`, { headers: { cookie: c } })).json();
-  assert.deepEqual(s.days["2026-09-27"], { creatine: true, protein: 158, steps: 11240 });
+  // Apple's protein is refused at the door; your 150g stands, steps land in Apple's bucket.
+  assert.deepEqual(s.days["2026-09-27"], { manual: { creatine: true, protein: 150 }, apple: { steps: 11240 } });
   assert.equal(s.lastSync.days, 1);
+  assert.deepEqual(s.lastSync.ignored, ["protein"]);
+
+  // Saving the day by hand replaces only what you logged; Apple's steps stay.
+  await fetch(`${base}/api/days/2026-09-27`, { method: "PUT", headers: { cookie: c, "content-type": "application/json" },
+    body: JSON.stringify({ protein: 160, foodDone: true, steps: 99999999999, kcal: -4 }) });
+  await fetch(`${base}/api/days/2026-09-27`, { method: "DELETE", headers: { cookie: c } });
+  const after = await (await fetch(`${base}/api/state`, { headers: { cookie: c } })).json();
+  assert.deepEqual(after.days["2026-09-27"], { manual: {}, apple: { steps: 11240 } }, "clearing your entries keeps Apple's");
+
+  const seen = await (await fetch(`${base}/api/settings`, { headers: { cookie: c } })).json();
+  assert.equal(seen.fieldsSeen.metrics.protein.accepted, false);
+  assert.equal(seen.fieldsSeen.metrics.steps.accepted, true);
   assert.equal(s.goals.goalWeight, 145);
 
   const junk = await fetch(`${base}/api/ingest`, { method: "POST", body: "{nope", headers: { authorization: "Bearer tok123" } });
@@ -88,6 +101,43 @@ test("writes need JSON, goals are cleaned, import replaces", async () => {
   assert.equal((await imp.json()).days, 1);
   const s = await (await fetch(`${base}/api/state`, { headers: { cookie: c } })).json();
   assert.deepEqual(Object.keys(s.days), ["2026-01-01"]);
+});
+
+test("old flat days migrate once; food/sleep wait for review; review keeps or sets aside", async () => {
+  const legacyStore = await openStore({ file: join(dir, "legacy.json") });
+  await legacyStore.replaceDays({
+    "2026-09-01": { kcal: 1900, protein: 150, creatine: true, steps: 9000 },
+    "2026-09-02": { kcal: 3400, protein: 40, bed: "23:00", wake: "03:05", sleepMins: 245, steps: 7000 },
+  });
+  await legacyStore.setMeta("goals", { ...{ tracked: ["calories", "protein", "workout"] } });
+  const s3 = await createApp({ store: legacyStore, root, password: "pw123456", secret: "k", ingestToken: "t", requireAuth: true });
+  await new Promise((r) => s3.listen(0, r));
+  const b3 = `http://127.0.0.1:${s3.address().port}`;
+  const res = await fetch(`${b3}/login`, { method: "POST", body: "password=pw123456", redirect: "manual",
+    headers: { "content-type": "application/x-www-form-urlencoded" } });
+  const c = res.headers.get("set-cookie").split(";")[0];
+  const st = await (await fetch(`${b3}/api/state`, { headers: { cookie: c } })).json();
+  assert.deepEqual(st.days["2026-09-01"].manual, { creatine: true });
+  assert.equal(st.days["2026-09-01"].legacy.kcal, 1900);
+  assert.deepEqual(st.days["2026-09-02"].legacy.appleSleep, { bed: "23:00", wake: "03:05", sleepMins: 245 });
+  assert.deepEqual(st.goals.tracked, ["calories", "protein", "workout", "active", "exercise"]);
+
+  const rv = await (await fetch(`${b3}/api/review`, { headers: { cookie: c } })).json();
+  assert.deepEqual(rv.items.map((x) => [x.key, x.savedByHand, !!x.sleep]), [["2026-09-02", false, false], ["2026-09-01", true, false]]);
+  const done = await (await fetch(`${b3}/api/review`, { method: "POST", headers: { cookie: c, "content-type": "application/json" },
+    body: JSON.stringify({ keep: ["2026-09-01"], reject: ["2026-09-02"] }) })).json();
+  assert.equal(done.done, 2);
+  assert.equal(done.items.length, 0);
+  const st2 = await (await fetch(`${b3}/api/state`, { headers: { cookie: c } })).json();
+  assert.deepEqual(st2.days["2026-09-01"].manual, { kcal: 1900, protein: 150, creatine: true, foodDone: true });
+  assert.deepEqual(st2.days["2026-09-02"].legacy.rejected, { kcal: 3400, protein: 40 });
+  s3.close();
+
+  // A second start doesn't migrate again.
+  const s4 = await createApp({ store: legacyStore, root, password: "pw123456", secret: "k", ingestToken: "t", requireAuth: true });
+  s4.close();
+  assert.deepEqual((await legacyStore.getAll()).days["2026-09-01"].manual.kcal, 1900);
+  await legacyStore.close();
 });
 
 test("five wrong passwords lock an address out for a minute", async () => {
