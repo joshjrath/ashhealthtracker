@@ -173,8 +173,14 @@ test("sample data: stored by source, today mid-way with protein and fiber to go"
   assert.equal(Object.keys(s.days).length, 120);
   assert.equal(s.days[T].apple.kcal, undefined, "no food in the Apple bucket");
   const today = resolveDay(s.days[T]);
-  assert.equal(today.protein, 143);
-  assert.equal(today.fiber, 8);
+  // Today's food comes from the diary: breakfast, lunch and a shake so far.
+  assert.equal(today.foods.length, 5);
+  assert.equal(today.kcal, 1205);
+  assert.equal(today.protein, 90.3);
+  assert.equal(today.food.missing.fiber, 1, "the estimated hoagie lists no fiber");
   const sc = dayScore(today, s.goals, true);
   assert.ok(sc.pending >= 2 && sc.miss === 0);
+  // Earlier days keep typed totals, like a log from before the diary.
+  const old = resolveDay(s.days[Object.keys(s.days)[0]]);
+  assert.equal(old.foods.length, 0);
 });

@@ -447,3 +447,43 @@ export function weekBars(rows, { width, color, target, fmtLabel }) {
   return `<svg class="plot mini weekbars" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Exercise minutes per week">
     ${grid}${cols}<line class="target" x1="${P.l}" x2="${W - P.r}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}"/></svg>`;
 }
+
+/**
+ * The week's calories, Monday → Sunday: complete days solid, partial days
+ * outlined, days with nothing logged marked "—". A line marks the daily
+ * target. Descriptive only — no colour for "good" or "bad".
+ */
+export function pacingChart(rows, { width, daily, color, fmtDay }) {
+  const P = { l: 8, r: 8, t: 22, b: 30 };
+  const W = Math.max(280, width), H = 168;
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const hi = Math.max(daily * 1.35, ...rows.map((r) => r.kcal || 0)) || 1;
+  const y = (v) => P.t + ih - (v / hi) * ih;
+  const band = iw / rows.length, bw = Math.min(40, band - 12);
+  const cols = rows.map((r, i) => {
+    const cx = P.l + band * (i + 0.5);
+    const x0 = cx - bw / 2;
+    const day = band >= 58 ? fmtDay(r.key, "short") : fmtDay(r.key, "short").split(" ")[0];
+    const lab = `<text class="axis${r.isToday ? " on" : ""}" x="${cx.toFixed(1)}" y="${H - 10}" text-anchor="middle">${esc(day)}</text>`;
+    let bar = "", val = "";
+    if (r.kcal != null && r.kcal > 0) {
+      const t = y(r.kcal), h = P.t + ih - t, rr = Math.min(6, h);
+      const d = `M${x0.toFixed(1)},${P.t + ih}V${(t + rr).toFixed(1)}Q${x0.toFixed(1)},${t.toFixed(1)} ${(x0 + rr).toFixed(1)},${t.toFixed(1)}H${(x0 + bw - rr).toFixed(1)}Q${(x0 + bw).toFixed(1)},${t.toFixed(1)} ${(x0 + bw).toFixed(1)},${(t + rr).toFixed(1)}V${P.t + ih}Z`;
+      bar = `<path class="pbar ${r.status}" d="${d}" style="--c:${color}"/>`;
+      val = `<text class="pval${r.status === "complete" ? "" : " part"}" x="${cx.toFixed(1)}" y="${(t - 7).toFixed(1)}" text-anchor="middle">${Math.round(r.kcal).toLocaleString("en-US")}</text>`;
+    } else if (!r.future) {
+      val = `<text class="pval none" x="${cx.toFixed(1)}" y="${(P.t + ih - 8).toFixed(1)}" text-anchor="middle">—</text>`;
+    } else {
+      bar = `<rect class="pfuture" x="${x0.toFixed(1)}" y="${(P.t + ih - 4).toFixed(1)}" width="${bw.toFixed(1)}" height="4" rx="2"/>`;
+    }
+    const word = r.future ? "Upcoming" : r.status === "complete" ? "Complete log" : r.status === "partial" ? (r.isToday ? "In progress" : "Partial log") : "No data";
+    return `<g class="hit" ${tip(fmtDay(r.key), r.kcal != null ? `${Math.round(r.kcal).toLocaleString("en-US")} kcal` : word, r.kcal != null ? word : "")}>
+      <rect x="${(cx - band / 2).toFixed(1)}" y="0" width="${band.toFixed(1)}" height="${H}" class="hitbg"/>${bar}${val}${lab}</g>`;
+  }).join("");
+  const ty = y(daily).toFixed(1);
+  return `<svg class="plot pacing" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Calories each day this week against the daily target">
+    <line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${P.t + ih}" y2="${P.t + ih}"/>
+    <line class="target" x1="${P.l}" x2="${W - P.r}" y1="${ty}" y2="${ty}" stroke-dasharray="4 4"/>
+    <text class="axis" x="${W - P.r}" y="${(Number(ty) - 6).toFixed(1)}" text-anchor="end">${Math.round(daily).toLocaleString("en-US")} daily target</text>
+    ${cols}</svg>`;
+}

@@ -5,7 +5,11 @@
    Both keep the same shape:
      days  key "YYYY-MM-DD" → { manual: {...}, apple: {...}, legacy: {...} }
            (see js/sources.js — each source writes only its own bucket)
-     meta  "goals", "lastSync", "prefs", "tokens", "auth", "sessionSecret"
+     meta  "goals", "lastSync", "prefs", "tokens", "auth", "sessionSecret", "foodApis",
+           "trainingPlan", "achievementTiers", "achievementLedger", …
+     items kind + id → data: saved foods ("food"), custom meals ("meal"),
+           rewards ("reward"), cached food lookups ("lookup") and AI
+           estimates ("estimate")
    ────────────────────────────────────────────────────────────────────────── */
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -32,6 +36,13 @@ async function openPg(url) {
     create table if not exists meta (
       k text primary key,
       v jsonb not null
+    );
+    create table if not exists items (
+      kind text not null,
+      id text not null,
+      data jsonb not null,
+      updated_at timestamptz not null default now(),
+      primary key (kind, id)
     );
   `);
 
@@ -60,6 +71,28 @@ async function openPg(url) {
       const days = Object.fromEntries(d.rows.map((r) => [r.key, r.data]));
       const meta = Object.fromEntries(m.rows.map((r) => [r.k, r.v]));
       return { days, goals: meta.goals ?? null, lastSync: meta.lastSync ?? null };
+    },
+    async getDay(key) {
+      const r = await pool.query("select data from days where key = $1", [key]);
+      return r.rows[0]?.data ?? null;
+    },
+    async listItems(kind) {
+      const r = await pool.query("select data from items where kind = $1 order by updated_at desc", [kind]);
+      return r.rows.map((x) => x.data);
+    },
+    async getItem(kind, id) {
+      const r = await pool.query("select data from items where kind = $1 and id = $2", [kind, id]);
+      return r.rows[0]?.data ?? null;
+    },
+    async putItem(kind, id, data) {
+      await pool.query(
+        `insert into items (kind, id, data) values ($1, $2, $3::jsonb)
+         on conflict (kind, id) do update set data = excluded.data, updated_at = now()`,
+        [kind, id, JSON.stringify(data)],
+      );
+    },
+    async deleteItem(kind, id) {
+      await pool.query("delete from items where kind = $1 and id = $2", [kind, id]);
     },
     async putDay(key, data) {
       await pool.query(
@@ -121,10 +154,10 @@ async function openPg(url) {
 /* ── JSON file ─────────────────────────────────────────────────────────── */
 
 async function openFile(file) {
-  let doc = { days: {}, meta: {} };
+  let doc = { days: {}, meta: {}, items: {} };
   try {
     const parsed = JSON.parse(await readFile(file, "utf8"));
-    doc = { days: parsed.days || {}, meta: parsed.meta || {} };
+    doc = { days: parsed.days || {}, meta: parsed.meta || {}, items: parsed.items || {} };
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
@@ -145,6 +178,13 @@ async function openFile(file) {
     async getAll() {
       return { days: structuredClone(doc.days), goals: doc.meta.goals ?? null, lastSync: doc.meta.lastSync ?? null };
     },
+    async getDay(key) { return doc.days[key] ? structuredClone(doc.days[key]) : null; },
+    async listItems(kind) {
+      return Object.values(doc.items[kind] || {}).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map((x) => structuredClone(x));
+    },
+    async getItem(kind, id) { return doc.items[kind]?.[id] ? structuredClone(doc.items[kind][id]) : null; },
+    async putItem(kind, id, data) { (doc.items[kind] ||= {})[id] = data; await flush(); },
+    async deleteItem(kind, id) { if (doc.items[kind]) delete doc.items[kind][id]; await flush(); },
     async putDay(key, data) { doc.days[key] = data; await flush(); },
     async deleteDay(key) { delete doc.days[key]; await flush(); },
     async mergeApple(days) {

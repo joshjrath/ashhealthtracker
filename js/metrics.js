@@ -17,6 +17,7 @@
       observations, or it returns null and the page says "Not enough data yet".
    ────────────────────────────────────────────────────────────────────────── */
 import { FOOD_FIELDS } from "./sources.js";
+import { plannedFor } from "./training.js";
 
 /** One colour per metric. Protein/Carbs/Fat are validated as a set (they
     share the composition bar); the rest only ever sit beside a label. */
@@ -44,6 +45,8 @@ export const DEFAULT_GOALS = {
   kcalTarget: 2000,
   kcalLow: 1900,
   kcalHigh: 2100,
+  maintenance: 2500, // estimated maintenance calories — context only, never a target
+  weeklyTarget: 0, // 0 = seven times the daily target
   protein: 150,
   carbs: 200,
   fat: 65,
@@ -121,6 +124,9 @@ export function sleepMinutes(day) {
   return d;
 }
 
+/** The day at `k`, or an empty stand-in that still knows its date (so a planned rest day reads as one). */
+export const dayAt = (days, k) => days[k] || { key: k };
+
 /* ── food completeness ─────────────────────────────────────────────────── */
 
 const has = (v) => v !== null && v !== undefined && v !== "";
@@ -162,6 +168,8 @@ export function goalStatus(id, day, g, isToday = false) {
       return m == null ? open : m >= g.sleepHours * 60 ? "hit" : "miss";
     }
     case "workout": {
+      // A planned rest day takes the workout goal out of the day entirely.
+      if (plannedFor(g.plan, day?.key) === "rest") return "off";
       if (day?.workout === true) return "hit";
       if (isToday) return "pending";
       // A rest day only counts as a miss when you said so, or the Watch synced that day.
@@ -174,9 +182,9 @@ export function goalStatus(id, day, g, isToday = false) {
 
 export const trackedIds = (g) => (g.tracked || []).filter((id) => GOAL_IDS.includes(id));
 
-/** The day's goals by status. `hit / total` is the headline; misses and gaps are kept apart. */
+/** The day's goals by status. `hit / total` is the headline; misses and gaps are kept apart. Goals that don't apply that day ("off") are left out. */
 export function dayScore(day, g, isToday = false) {
-  const detail = trackedIds(g).map((id) => ({ id, status: goalStatus(id, day, g, isToday) }));
+  const detail = trackedIds(g).map((id) => ({ id, status: goalStatus(id, day, g, isToday) })).filter((x) => x.status !== "off");
   const count = (s) => detail.filter((x) => x.status === s).length;
   const hit = count("hit"), miss = count("miss"), none = count("none"), pending = count("pending");
   const total = detail.length;
@@ -195,7 +203,7 @@ export function streak(id, days, g, today) {
   const GAP = 2;
   let best = 0, run = 0, gap = 0;
   for (const k of range(first, today)) {
-    const s = goalStatus(id, days[k], g, k === today);
+    const s = goalStatus(id, dayAt(days, k), g, k === today);
     if (s === "hit") { run += 1; gap = 0; }
     else if (s === "miss") { run = 0; gap = 0; }
     else if (s === "none") { gap += 1; if (gap > GAP) run = 0; }
@@ -203,7 +211,7 @@ export function streak(id, days, g, today) {
   }
   let current = 0; gap = 0;
   for (let k = today; k >= first; k = addDays(k, -1)) {
-    const s = goalStatus(id, days[k], g, k === today);
+    const s = goalStatus(id, dayAt(days, k), g, k === today);
     if (s === "hit") { current += 1; gap = 0; }
     else if (s === "miss") break;
     else if (s === "none") { gap += 1; if (gap > GAP) break; }
@@ -220,7 +228,7 @@ export function adherence(days, g, a, b, today, ids = trackedIds(g)) {
   for (const k of range(a, b)) {
     if (k > today) break;
     for (const id of ids) {
-      const s = goalStatus(id, days[k], g, k === today);
+      const s = goalStatus(id, dayAt(days, k), g, k === today);
       if (s === "hit") { hit += 1; judged += 1; }
       else if (s === "miss") judged += 1;
       else if (s === "none") none += 1;

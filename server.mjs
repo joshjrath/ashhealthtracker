@@ -41,6 +41,13 @@ const app = await createApp({
   secret,
   ingestToken: env.INGEST_TOKEN,
   requireAuth: onRailway,
+  // Optional: food lookup keys can also be set in Settings → Food lookup.
+  foodEnv: {
+    usdaKey: env.USDA_API_KEY,
+    anthropicKey: env.ANTHROPIC_API_KEY,
+    fatsecretId: env.FATSECRET_CLIENT_ID,
+    fatsecretSecret: env.FATSECRET_CLIENT_SECRET,
+  },
 });
 
 const auth = await store.getMeta("auth");

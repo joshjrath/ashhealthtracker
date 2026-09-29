@@ -7,13 +7,25 @@
      POST /logout
      POST /api/ingest                 token    Apple Health → merged into days
      GET  /api/state                  session  everything the page draws
-     PUT  /api/days/:key              session  save what you logged (the day's manual bucket)
+     PUT  /api/days/:key              session  save what you logged (the day's manual bucket);
+                                               food entries and lifts are kept unless sent
+     PATCH /api/days/:key             session  change some of what you logged ({ foods }, { foodDone }, { lifts }…)
      DELETE /api/days/:key            session  clear what you logged; Apple's data stays
      DELETE /api/days                 session  erase every day
      PUT  /api/goals                  session
      POST /api/import                 session  replace all days (+ goals)
      GET  /api/review                 session  pre-provenance food/sleep awaiting a decision
      POST /api/review                 session  { keep: [keys], reject: [keys] }
+
+   Food, training and achievements:
+     GET  /api/library                session  saved foods, meals, rewards
+     PUT  /api/items/:kind/:id        session  save a food, meal or reward
+     DELETE /api/items/:kind/:id      session
+     GET  /api/food/search?q=         session  saved + USDA / FatSecret / Open Food Facts (cached)
+     POST /api/food/estimate          session  { text } → an AI estimate, labelled as one
+     PUT  /api/plan                   session  weekly training plan
+     PUT  /api/achievement-tiers      session  your own tier thresholds
+     POST /api/achievements/ledger    session  { init: [ids] } first run · { ack: [ids] } celebrated
 
    Settings — everything that used to mean editing Railway variables:
      GET  /api/settings               session  tokens (masked), password source, prefs
@@ -25,6 +37,8 @@
      DELETE /api/tokens/:id           session
      PUT  /api/password               session  { current, next }
      POST /api/sessions/revoke        session  sign out every other device
+     PUT  /api/food-apis              session  lookup keys and model ("" clears one)
+     POST /api/food-apis/test         session  { provider } → a live check
    ────────────────────────────────────────────────────────────────────────── */
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -34,6 +48,11 @@ import { COOKIE, TTL_SECONDS, sessions, sameSecret, hashPassword, checkHash, new
 import { parseIngest } from "./apple.mjs";
 import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
 import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "../js/sources.js";
+import { CLEAN, matchFoods } from "../js/library.js";
+import { cleanPlan } from "../js/training.js";
+import { DEFAULT_CATALOG } from "../js/achievements.js";
+import { createFoodLookup, USDA_SIGNUP } from "./food.mjs";
+import { createEstimator, AI_MODELS, DEFAULT_MODEL } from "./ai.mjs";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BODY = 40 * 1024 * 1024; // a 90-day per-sample export can run to tens of MB
@@ -67,11 +86,16 @@ const PREFS = {
 };
 export const DEFAULT_PREFS = { weightRange: "90", trendRange: 30, trendMetric: "calories", sleepN: 7, showSample: true };
 
+const ITEM_KINDS = Object.keys(CLEAN); // food, meal, reward
+const FOOD_KEYS = ["usdaKey", "anthropicKey", "fatsecretId", "fatsecretSecret"];
+
 /**
  * `password` and `ingestToken` are the Railway variables: the starting
- * password and a fallback upload token. Settings saved in the database win.
+ * password and a fallback upload token. `foodEnv` holds the optional
+ * lookup keys from Railway variables. Settings saved in the database win.
+ * `fetch` and `makeClient` are for tests.
  */
-export async function createApp({ store, root, password, secret, ingestToken, requireAuth }) {
+export async function createApp({ store, root, password, secret, ingestToken, requireAuth, foodEnv = {}, fetch, makeClient }) {
   const sess = sessions(secret);
   const loginLimit = limiter(5, 60_000);
   const pwLimit = limiter(5, 60_000);
@@ -81,6 +105,24 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     auth: (await store.getMeta("auth")) || null, // { salt, hash, epoch, updatedAt }
     tokens: (await store.getMeta("tokens")) || [], // [{ id, name, token, createdAt, lastUsedAt, lastSync }]
     prefs: { ...DEFAULT_PREFS, ...((await store.getMeta("prefs")) || {}) },
+    food: (await store.getMeta("foodApis")) || {}, // { usdaKey, anthropicKey, anthropicModel, fatsecretId, fatsecretSecret, offEnabled }
+  };
+  /** Lookup keys: Settings first, then Railway variables. */
+  const foodKeys = () => {
+    const out = { anthropicModel: cfg.food.anthropicModel || DEFAULT_MODEL, offEnabled: cfg.food.offEnabled !== false };
+    for (const k of FOOD_KEYS) out[k] = cfg.food[k] || foodEnv[k] || "";
+    return out;
+  };
+  const lookup = createFoodLookup({ store, keys: foodKeys, ...(fetch ? { fetch } : {}) });
+  const estimator = createEstimator({ store, keys: foodKeys, ...(makeClient ? { makeClient } : {}) });
+  // One write at a time per day, so two quick edits can't overwrite each other.
+  const locks = new Map();
+  const withLock = (key, fn) => {
+    const run = (locks.get(key) || Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => {});
+    locks.set(key, tail);
+    tail.then(() => { if (locks.get(key) === tail) locks.delete(key); });
+    return run;
   };
   await migrate(store);
   const epoch = () => cfg.auth?.epoch ?? 0;
@@ -163,7 +205,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     if (path.startsWith("/api/")) {
       // Cross-site pages can't send a JSON body without a preflight this
       // server never approves, so requiring JSON on writes stops CSRF.
-      if ((method === "POST" || method === "PUT") && !/^application\/json\b/.test(req.headers["content-type"] || "")) {
+      if ((method === "POST" || method === "PUT" || method === "PATCH") && !/^application\/json\b/.test(req.headers["content-type"] || "")) {
         return json(res, 415, { error: "Send application/json" });
       }
       return api(req, res, method, path);
@@ -175,27 +217,116 @@ export async function createApp({ store, root, password, secret, ingestToken, re
 
   async function api(req, res, method, path) {
     if (path === "/api/state" && method === "GET") {
-      const s = await store.getAll();
+      const [s, library, plan, tiers, catalog, ledger] = await Promise.all([
+        store.getAll(), loadLibrary(), store.getMeta("trainingPlan"), store.getMeta("achievementTiers"),
+        store.getMeta("achievementCatalog"), store.getMeta("achievementLedger"),
+      ]);
+      const k = foodKeys();
       return json(res, 200, {
         days: s.days, goals: { ...DEFAULT_GOALS, ...(s.goals || {}) }, lastSync: s.lastSync,
         prefs: cfg.prefs, storage: store.kind, open: isOpen(),
+        library, plan: plan || null,
+        achievements: { tiers: tiers || {}, catalog: catalog || [], ledger: ledger || { initializedAt: null, entries: {} } },
+        lookup: { usda: k.usdaKey ? "key" : "demo", fatsecret: !!(k.fatsecretId && k.fatsecretSecret), off: k.offEnabled, ai: !!k.anthropicKey },
       });
     }
     if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/prefs")
-      || path === "/api/password" || path === "/api/sessions/revoke") {
+      || path === "/api/password" || path === "/api/sessions/revoke" || path.startsWith("/api/food-apis")) {
       return settingsApi(req, res, method, path);
     }
     const m = path.match(/^\/api\/days\/(\d{4}-\d{2}-\d{2})$/);
     if (m && KEY_RE.test(m[1])) {
-      if (method === "PUT") {
-        const manual = cleanManual(await readJson(req));
-        await store.putManual(m[1], manual);
+      const key = m[1];
+      if (method === "PUT" || method === "PATCH") {
+        const body = await readJson(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "Send an object" });
+        const manual = await withLock(key, async () => {
+          const prev = (await store.getDay(key))?.manual || {};
+          // PUT replaces what you logged but keeps the diary and lifts unless they're sent;
+          // PATCH changes only the fields sent (null clears one).
+          const next = method === "PUT"
+            ? cleanManual({ ...body, foods: "foods" in body ? body.foods : prev.foods, lifts: "lifts" in body ? body.lifts : prev.lifts })
+            : cleanManual({ ...prev, ...body });
+          await store.putManual(key, next);
+          await countUses(prev.foods, next.foods);
+          return next;
+        });
         return json(res, 200, { ok: true, manual });
       }
       if (method === "DELETE") {
-        await store.putManual(m[1], {});
+        await withLock(key, () => store.putManual(key, {}));
         return json(res, 200, { ok: true });
       }
+    }
+    if (path === "/api/library" && method === "GET") return json(res, 200, await loadLibrary());
+    const im = path.match(/^\/api\/items\/([a-z]+)\/([\w-]{1,60})$/);
+    if (im && ITEM_KINDS.includes(im[1])) {
+      const [, kind, id] = im;
+      if (method === "PUT") {
+        const body = await readJson(req);
+        const prev = await store.getItem(kind, id);
+        const item = CLEAN[kind]({ ...body, id });
+        if (!item) return json(res, 400, { error: kind === "food" ? "A food needs a name and calories" : "A name is required" });
+        if (prev) item.createdAt = prev.createdAt || item.createdAt;
+        if (kind === "food") item.uses = prev?.uses || { count: 0, lastUsedAt: null }; // counted by the server as you log
+        await store.putItem(kind, id, item);
+        return json(res, 200, { ok: true, item });
+      }
+      if (method === "DELETE") {
+        await store.deleteItem(kind, id);
+        return json(res, 200, { ok: true });
+      }
+    }
+    if (path === "/api/food/search" && method === "GET") {
+      const q = new URL(req.url, "http://x").searchParams.get("q") || "";
+      if (!q.trim()) return json(res, 400, { error: "Type a food to search for" });
+      const [found, foods] = await Promise.all([lookup.search(q.slice(0, 200)), store.listItems("food")]);
+      return json(res, 200, { ...found, saved: matchFoods(foods, found.query.term, 6) });
+    }
+    if (path === "/api/food/estimate" && method === "POST") {
+      const body = await readJson(req);
+      try {
+        return json(res, 200, { ok: true, food: await estimator.estimate(body?.text) });
+      } catch (e) {
+        if (e.status) return json(res, e.status, { error: e.message });
+        throw e;
+      }
+    }
+    if (path === "/api/plan" && method === "PUT") {
+      const body = await readJson(req);
+      const plan = body === null || body?.days === null ? null : cleanPlan(body);
+      if (body !== null && body?.days !== null && !plan) return json(res, 400, { error: "Send { days: { mon: 'strength', … } }" });
+      await store.setMeta("trainingPlan", plan);
+      return json(res, 200, { ok: true, plan });
+    }
+    if (path === "/api/achievement-tiers" && method === "PUT") {
+      const body = await readJson(req);
+      const out = {};
+      for (const def of DEFAULT_CATALOG) {
+        const t = body?.[def.id];
+        if (!Array.isArray(t)) continue;
+        const n = t.map(Number);
+        const ok = n.length === def.tiers.length && n.every((v, i) => Number.isFinite(v) && v > 0 && (i === 0 || v > n[i - 1]));
+        if (!ok) return json(res, 400, { error: `${def.name}: ${def.tiers.length} thresholds, each bigger than the last` });
+        if (n.some((v, i) => v !== def.tiers[i])) out[def.id] = n;
+      }
+      await store.setMeta("achievementTiers", out);
+      return json(res, 200, { ok: true, tiers: out });
+    }
+    if (path === "/api/achievements/ledger" && method === "POST") {
+      const body = await readJson(req);
+      const ids = (list) => (Array.isArray(list) ? list : []).filter((id) => typeof id === "string" && /^[\w-]{1,50}$/.test(id)).slice(0, 500);
+      const ledger = (await store.getMeta("achievementLedger")) || { initializedAt: null, entries: {} };
+      const at = new Date().toISOString();
+      // First run: whatever your history already unlocked is recorded as historical,
+      // so the page can mention it once instead of celebrating each badge.
+      if (Array.isArray(body?.init) && !ledger.initializedAt) {
+        ledger.initializedAt = at;
+        for (const id of ids(body.init)) ledger.entries[id] = { ...(ledger.entries[id] || {}), historical: true, at };
+      }
+      for (const id of ids(body?.ack)) ledger.entries[id] = { ...(ledger.entries[id] || { at }), ackAt: at };
+      await store.setMeta("achievementLedger", ledger);
+      return json(res, 200, { ok: true, ledger });
     }
     if (path === "/api/days" && method === "DELETE") {
       await store.replaceDays({});
@@ -213,7 +344,16 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
       await store.replaceDays(days);
       if (body.goals) await store.setMeta("goals", cleanGoals(body.goals));
-      return json(res, 200, { ok: true, days: Object.keys(days).length });
+      // Exports since the food diary carry your library and training plan too.
+      let items = 0;
+      for (const kind of ITEM_KINDS) {
+        for (const raw of Array.isArray(body.library?.[`${kind}s`]) ? body.library[`${kind}s`] : []) {
+          const item = CLEAN[kind](raw);
+          if (item) { await store.putItem(kind, item.id, item); items += 1; }
+        }
+      }
+      if (body.plan !== undefined) await store.setMeta("trainingPlan", cleanPlan(body.plan));
+      return json(res, 200, { ok: true, days: Object.keys(days).length, items });
     }
     if (path === "/api/review" && method === "GET") {
       return json(res, 200, { items: reviewItems((await store.getAll()).days) });
@@ -232,6 +372,38 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       return json(res, 200, { ok: true, done, items: reviewItems((await store.getAll()).days) });
     }
     return json(res, 404, { error: "Not found" });
+  }
+
+  /** What Settings shows about lookup keys: never the key itself. */
+  function foodView() {
+    const one = (k) => {
+      const v = cfg.food[k] || foodEnv[k] || "";
+      return { set: !!v, source: cfg.food[k] ? "settings" : foodEnv[k] ? "railway" : "none", preview: v ? (v.length > 12 ? `${v.slice(0, 4)}…${v.slice(-4)}` : "••••") : null };
+    };
+    const k = foodKeys();
+    return {
+      usda: one("usdaKey"), anthropic: one("anthropicKey"), fatsecretId: one("fatsecretId"), fatsecretSecret: one("fatsecretSecret"),
+      model: k.anthropicModel, models: AI_MODELS, offEnabled: k.offEnabled, usdaSignup: USDA_SIGNUP,
+    };
+  }
+
+  async function loadLibrary() {
+    const [foods, meals, rewards] = await Promise.all(ITEM_KINDS.map((k) => store.listItems(k)));
+    return { foods, meals, rewards };
+  }
+
+  /** Each newly logged entry that came from a saved food counts as a use (recent / frequent). */
+  async function countUses(before = [], after = []) {
+    const had = new Set((before || []).map((e) => e.id));
+    const added = {};
+    for (const e of after || []) if (e.foodId && !had.has(e.id)) added[e.foodId] = (added[e.foodId] || 0) + 1;
+    const at = new Date().toISOString();
+    for (const [id, n] of Object.entries(added)) {
+      const f = await store.getItem("food", id);
+      if (!f) continue;
+      f.uses = { count: (f.uses?.count || 0) + n, lastUsedAt: at };
+      await store.putItem("food", id, f);
+    }
   }
 
   /** A running tally of every metric and workout field the phone has sent. */
@@ -266,7 +438,38 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         storage: store.kind,
         open: isOpen(),
         fieldsSeen: (await store.getMeta("fieldsSeen")) || null,
+        food: foodView(),
       });
+    }
+    if (path === "/api/food-apis" && method === "PUT") {
+      const body = await readJson(req);
+      const next = { ...cfg.food };
+      for (const k of FOOD_KEYS) {
+        if (!(k in (body || {}))) continue;
+        const v = String(body[k] ?? "").trim();
+        if (v.length > 300 || /\s/.test(v)) return json(res, 400, { error: "That doesn't look like a key" });
+        if (v) next[k] = v; else delete next[k];
+      }
+      if (body && "anthropicModel" in body) {
+        if (!AI_MODELS.some((m) => m.id === body.anthropicModel)) return json(res, 400, { error: "Unknown model" });
+        next.anthropicModel = body.anthropicModel;
+      }
+      if (body && typeof body.offEnabled === "boolean") next.offEnabled = body.offEnabled;
+      cfg.food = next;
+      await store.setMeta("foodApis", next);
+      return json(res, 200, { ok: true, food: foodView() });
+    }
+    if (path === "/api/food-apis/test" && method === "POST") {
+      const provider = (await readJson(req))?.provider;
+      if (provider === "anthropic") return json(res, 200, await estimator.test());
+      if (!["usda", "fatsecret", "off"].includes(provider)) return json(res, 400, { error: "Unknown provider" });
+      const r = await lookup.search("banana", { fresh: true, only: provider });
+      const status = r.providers[provider];
+      if (!status) return json(res, 200, { ok: false, message: "Not set up yet" });
+      const note = r.notes.find(Boolean)?.message;
+      return json(res, 200, status === "ok"
+        ? { ok: true, message: `Working — ${r.results.length} result${r.results.length === 1 ? "" : "s"} for “banana”` }
+        : { ok: false, message: note || "Didn't answer" });
     }
     if (path === "/api/prefs" && method === "PUT") {
       const body = await readJson(req);

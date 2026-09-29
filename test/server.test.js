@@ -15,6 +15,8 @@ before(async () => {
   // TEST_DATABASE_URL runs the same checks against a real Postgres.
   store = await openStore({ databaseUrl: process.env.TEST_DATABASE_URL, file: join(dir, "db.json") });
   await store.replaceDays({});
+  // A reused test database may hold a password, tokens or settings from an earlier run.
+  for (const k of ["auth", "tokens", "prefs", "lastSync", "fieldsSeen", "goals"]) await store.setMeta(k, null);
   server = await createApp({ store, root, password: "hunter2", secret: "s".repeat(32), ingestToken: "tok123", requireAuth: true });
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;

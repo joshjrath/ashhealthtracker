@@ -4,7 +4,8 @@
    A stored day keeps each source in its own bucket, so nothing written by
    Apple Health can land in a manual-only metric:
 
-     { manual: { kcal, protein, …, bed, wake, creatine, foodDone, … },
+     { manual: { foods: [...], kcal, protein, …, bed, wake, creatine, foodDone,
+                 lifts: [...], … },
        apple:  { steps, activeKcal, exerciseMin, weight, workouts: [...] },
        legacy: { … } }   ← values saved before sources were tracked
 
@@ -13,8 +14,14 @@
    Server-side, cleanManual() and cleanApple() are the only doors into
    the buckets, and each lets through only the fields its source may set.
 
+   Food is itemised in manual.foods (the diary); manual.kcal etc. are
+   "quick add" totals typed without itemising (older days, the log
+   dialog). A day's food totals are the two added together. Lifts
+   (sets × reps × weight) live in manual.lifts.
+
    This file is shared by the browser and the server.
    ────────────────────────────────────────────────────────────────────────── */
+import { dayFood, MEAL_IDS, UNIT_IDS } from "./nutrition.js";
 
 /**
  * For each metric, the buckets it may be read from, in priority order.
@@ -50,12 +57,18 @@ export const REVIEW_FIELDS = [...FOOD_FIELDS, "bed", "wake"];
 const has = (v) => v !== null && v !== undefined && v !== "";
 const isBucketed = (d) => !!d && typeof d === "object" && ("manual" in d || "apple" in d || "legacy" in d);
 
-/** One stored day → the flat day every chart reads, with `src` per field. */
-export function resolveDay(raw) {
+/** One stored day → the flat day every chart reads, with `src` per field. `key` is its date. */
+export function resolveDay(raw, key) {
   if (!raw) return null;
   const b = isBucketed(raw) ? raw : migrateDay(raw);
-  const bucket = { manual: b.manual || {}, apple: b.apple || {}, legacy: b.legacy || {} };
-  const d = { src: {} };
+  const manual = b.manual || {};
+  // Food totals = diary entries + quick-add totals, computed only from what you logged.
+  const food = dayFood(manual);
+  const effective = { ...manual };
+  for (const n of FOOD_FIELDS) effective[n] = food.totals[n] ?? undefined;
+  const bucket = { manual: effective, apple: b.apple || {}, legacy: b.legacy || {} };
+  const d = { src: {}, foods: food.entries, food, lifts: Array.isArray(manual.lifts) ? manual.lifts : [] };
+  if (key) d.key = key;
   for (const [field, from] of Object.entries(RULES)) {
     for (const s of from) {
       if (has(bucket[s][field])) {
@@ -68,7 +81,7 @@ export function resolveDay(raw) {
   // Workouts: Apple's list; a manual tick counts too; legacy only as a yes/no.
   d.workouts = Array.isArray(bucket.apple.workouts) ? bucket.apple.workouts : [];
   if (d.workouts.length || bucket.apple.workoutFlag === true) { d.workout = true; d.src.workout = "apple"; }
-  if (bucket.manual.workout === true) { d.workout = true; d.src.workout = "manual"; }
+  if (bucket.manual.workout === true || d.lifts.length) { d.workout = true; d.src.workout = "manual"; }
   else if (d.workout === undefined && bucket.manual.workout === false) { d.workout = false; d.src.workout = "manual"; }
   else if (d.workout === undefined && has(bucket.legacy.workout)) { d.workout = !!bucket.legacy.workout; d.src.workout = "legacy"; }
   // Did the Watch sync fitness for this day? Lets "no workout" count as a miss.
@@ -128,10 +141,89 @@ function pick(raw, spec) {
   return out;
 }
 
-/** What you typed. Bed and wake only count as a pair. */
+const str = (v, max) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
+const SOURCE_KINDS = ["verified", "database", "estimate", "custom"];
+
+/** A food's provenance: where its numbers came from, and whether you changed them. */
+export function cleanSource(raw) {
+  if (!raw || typeof raw !== "object") return { kind: "custom" };
+  const out = { kind: SOURCE_KINDS.includes(raw.kind) ? raw.kind : "custom" };
+  const provider = str(raw.provider, 40), ref = str(raw.ref, 80), note = str(raw.note, 300);
+  const url = typeof raw.url === "string" && /^https:\/\/[^\s"<>]+$/.test(raw.url) ? raw.url.slice(0, 400) : undefined;
+  if (provider) out.provider = provider;
+  if (ref) out.ref = ref;
+  if (url) out.url = url;
+  if (note) out.note = note;
+  if (raw.edited === true) out.edited = true;
+  if (typeof raw.confidence === "string" && ["high", "medium", "low"].includes(raw.confidence)) out.confidence = raw.confidence;
+  return out;
+}
+
+export function cleanServing(raw) {
+  const out = { label: str(raw?.label, 60) || "1 serving", amount: num(raw?.amount) || 1, unit: UNIT_IDS.includes(raw?.unit) ? raw.unit : "serving" };
+  const grams = num(raw?.grams), ml = num(raw?.ml);
+  if (grams) out.grams = Math.round(grams * 100) / 100;
+  if (ml) out.ml = Math.round(ml * 100) / 100;
+  return out;
+}
+
+const nutrient = (v, d = 1) => { const n = num(v); return n === undefined ? null : Math.round(n * 10 ** d) / 10 ** d; };
+
+/** One diary entry. Calories are required; any other nutrient may be unknown (null). */
+export function cleanFoodEntry(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const name = str(raw.name, 120);
+  const kcal = num(raw.kcal);
+  if (!name || kcal === undefined) return null;
+  const e = {
+    id: str(raw.id, 48) || `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+    meal: MEAL_IDS.includes(raw.meal) ? raw.meal : "snacks",
+    name,
+    qty: num(raw.qty) ?? 1,
+    unit: UNIT_IDS.includes(raw.unit) ? raw.unit : "serving",
+    serving: cleanServing(raw.serving),
+    kcal: Math.round(kcal),
+    protein: nutrient(raw.protein), carbs: nutrient(raw.carbs), fat: nutrient(raw.fat), fiber: nutrient(raw.fiber),
+    source: cleanSource(raw.source),
+  };
+  const brand = str(raw.brand, 80), notes = str(raw.notes, 300), foodId = str(raw.foodId, 60), time = clock(raw.time);
+  if (brand) e.brand = brand;
+  if (notes) e.notes = notes;
+  if (foodId) e.foodId = foodId;
+  if (time) e.time = time;
+  if (raw.group && typeof raw.group === "object" && str(raw.group.id, 60)) e.group = { id: str(raw.group.id, 60), name: str(raw.group.name, 80) || "Meal" };
+  return e;
+}
+
+/** One exercise in a session: sets of reps × weight. */
+export function cleanLift(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const exercise = str(raw.exercise, 80);
+  if (!exercise) return null;
+  const sets = (Array.isArray(raw.sets) ? raw.sets : []).slice(0, 50).map((x) => {
+    const reps = int(x?.reps), weight = num(x?.weight);
+    if (!reps || reps > 1000) return null;
+    return { reps, weight: weight !== undefined && weight <= 3000 ? Math.round(weight * 10) / 10 : 0, unit: x?.unit === "kg" ? "kg" : "lb" };
+  }).filter(Boolean);
+  if (!sets.length) return null;
+  const out = { id: str(raw.id, 48) || `l${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, exercise, sets };
+  const notes = str(raw.notes, 300);
+  if (notes) out.notes = notes;
+  return out;
+}
+
+/** What you typed. Bed and wake only count as a pair. Food entries and lifts are checked one by one. */
 export function cleanManual(raw) {
   const d = pick(raw, MANUAL_FIELDS);
   if (!d.bed || !d.wake) { delete d.bed; delete d.wake; }
+  if (Array.isArray(raw?.foods)) {
+    const foods = raw.foods.slice(0, 300).map(cleanFoodEntry).filter(Boolean);
+    if (foods.length) d.foods = foods;
+  }
+  if (Array.isArray(raw?.lifts)) {
+    const lifts = raw.lifts.slice(0, 60).map(cleanLift).filter(Boolean);
+    if (lifts.length) d.lifts = lifts;
+  }
   return d;
 }
 

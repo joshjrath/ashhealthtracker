@@ -9,14 +9,20 @@
    never a zero standing in for something that wasn't logged.
    ────────────────────────────────────────────────────────────────────────── */
 import {
-  METRICS, GOAL_IDS, MIN, addDays, parseKey, range, mondayOf, daysBetween, trackedIds,
+  METRICS, GOAL_IDS, MIN, addDays, parseKey, range, mondayOf, daysBetween, trackedIds, dayAt,
   goalStatus, dayScore, streak, adherence, valueOf, averageOf, foodStatus, foodCoverage,
   weightSeries, goalProgress, weeklyWeight, weightStats, macroCalories, sleepMinutes, nightOffset,
   workoutsIn, fitnessTotals, workoutStreak, weeklyReview, insights,
   fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
-import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType } from "./charts.js";
+import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart } from "./charts.js";
 import { reviewItems } from "./sources.js";
+import { MEALS } from "./nutrition.js";
+import { WEEKDAYS, WEEKDAY_LABELS, PLAN_TYPES, PLAN_LABELS } from "./training.js";
+import { DEFAULT_CATALOG } from "./achievements.js";
+import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
+import { nextUnlockCard, achievementsPage } from "./trophies.js";
+import { strengthCard, setsText } from "./strength.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -38,8 +44,8 @@ const OPEN = `<svg viewBox="0 0 16 16" class="ico" aria-hidden="true"><circle cx
 const CROSS = `<svg viewBox="0 0 16 16" class="ico" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const DASH = `<svg viewBox="0 0 16 16" class="ico" aria-hidden="true"><path d="M5 8h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 const FLAME = `<svg viewBox="0 0 16 16" class="ico" aria-hidden="true"><path d="M8.2 1.5c.4 2.3-1.4 3.4-2.5 4.9C4.6 7.8 4 9 4 10.3 4 12.9 5.9 14.5 8 14.5s4-1.5 4-4.1c0-1.6-.8-2.8-1.6-3.6.1 1.2-.4 2.1-1.2 2.4.6-2.8-.2-5.8-1-7.7z" fill="currentColor"/></svg>`;
-const GLYPH = { hit: CHECK, miss: CROSS, none: DASH, pending: OPEN };
-const STATUS_WORD = { hit: "Hit", miss: "Missed", none: "No data", pending: "In progress" };
+const GLYPH = { hit: CHECK, miss: CROSS, none: DASH, pending: OPEN, off: DASH };
+const STATUS_WORD = { hit: "Hit", miss: "Missed", none: "No data", pending: "In progress", off: "Rest day (planned)" };
 const NOT_ENOUGH = `<span class="nodata-inline">Not enough data yet</span>`;
 const SRC = { manual: "Logged by you", apple: "Apple Health", legacy: "Older entry" };
 
@@ -91,7 +97,7 @@ function tabs(act, options, current) {
 /* ── page chrome ───────────────────────────────────────────────────────── */
 
 export function pageHeader(ctx, title, withGoals = true) {
-  const s = dayScore(ctx.days[ctx.today], ctx.g, true);
+  const s = dayScore(dayAt(ctx.days, ctx.today), ctx.g, true);
   const segs = s.detail.map((x) => `<i class="${x.status === "hit" ? "on" : x.status}" style="--c:${color(x.id)}" title="${esc(label(x.id))}: ${STATUS_WORD[x.status]}"></i>`).join("");
   return `<header class="page">
     <div>
@@ -126,7 +132,7 @@ function reviewNudge(ctx) {
 /* ── daily score + finish today ────────────────────────────────────────── */
 
 export function scoreCard(ctx) {
-  const day = ctx.days[ctx.today];
+  const day = dayAt(ctx.days, ctx.today);
   const s = dayScore(day, ctx.g, true);
   const pending = s.detail.filter((x) => x.status === "pending");
   const missed = s.detail.filter((x) => x.status === "miss");
@@ -154,7 +160,7 @@ export function scoreCard(ctx) {
 
 export function statCards(ctx) {
   const { g, today } = ctx;
-  const d = ctx.days[today] || {};
+  const d = dayAt(ctx.days, today);
   const gp = goalProgress(ctx.days, g, today);
   const sleep = sleepMinutes(d);
   const trend = weightSeries(ctx.days, addDays(today, -29), today).map((x) => x.avg);
@@ -186,9 +192,9 @@ export function statCards(ctx) {
 
 /* ── calorie ring ──────────────────────────────────────────────────────── */
 
-export function calorieCard(ctx) {
+export function calorieCard(ctx, key = ctx.today) {
   const { g } = ctx;
-  const d = ctx.days[ctx.today] || {};
+  const d = ctx.days[key] || {};
   const k = d.kcal;
   const food = foodStatus(d);
   const status = k == null ? `<span class="pill">Nothing logged</span>`
@@ -196,7 +202,7 @@ export function calorieCard(ctx) {
     : k >= g.kcalLow ? (food === "complete" ? `<span class="pill ok">${CHECK} In range</span>` : `<span class="pill">In range so far</span>`)
     : `<span class="pill">${fmtInt(g.kcalLow - k)} to range</span>`;
   return `<section class="card cal-card">
-    <h2>Calories <span class="sub">${food === "complete" ? "log complete" : food === "partial" ? "log in progress" : ""}</span></h2>
+    <h2>Calories <span class="sub">${key !== ctx.today ? `${esc(fmtDay(key, true))} · ` : ""}${food === "complete" ? "log complete" : food === "partial" ? (key === ctx.today ? "log in progress" : "partial log") : ""}</span></h2>
     <div class="bigring">
       ${ring({ pct: (k ?? 0) / g.kcalTarget, size: 232, stroke: 18, color: color("calories"),
         zone: [g.kcalLow / g.kcalTarget, g.kcalHigh / g.kcalTarget], label: k == null ? "Nothing logged" : `${k} of ${g.kcalTarget} kcal` })}
@@ -212,9 +218,9 @@ export function calorieCard(ctx) {
 
 /* ── macros ────────────────────────────────────────────────────────────── */
 
-export function macroCard(ctx) {
+export function macroCard(ctx, key = ctx.today) {
   const { g } = ctx;
-  const d = ctx.days[ctx.today] || {};
+  const d = ctx.days[key] || {};
   const mini = (id, size, stroke) => {
     const v = d[id], t = g[id];
     return `<div class="macro ${id}">
@@ -236,7 +242,7 @@ export function macroCard(ctx) {
       <div class="compbar">${bar}</div><div class="complegend">${legend}</div>`;
   }
   return `<section class="card macros">
-    <h2>Macros</h2>
+    <h2>Macros${key !== ctx.today ? ` <span class="sub">${esc(fmtDay(key, true))}</span>` : ""}</h2>
     <div class="mrow">
       ${mini("protein", 132, 13)}
       <div class="sec">${mini("carbs", 86, 8)}${mini("fat", 86, 8)}</div>
@@ -293,10 +299,10 @@ export function heatmap(ctx) {
   const head = keys.map((k) => `<div class="hh${k === today ? " today" : ""}"><span>${WD[parseKey(k).getDay()]}</span><b>${parseKey(k).getDate()}</b></div>`).join("");
   const rows = ids.map((id) => `<div class="hl"><i style="--c:${color(id)}"></i>${esc(METRICS[id].short || label(id))}</div>` + keys.map((k) => {
     const future = k > today;
-    const stt = future ? "future" : goalStatus(id, ctx.days[k], g, k === today);
-    const cls = { hit: "on", miss: "miss", none: "none", pending: "pending", future: "none future" }[stt];
+    const stt = future ? "future" : goalStatus(id, ctx.days[k] || { key: k }, g, k === today);
+    const cls = { hit: "on", miss: "miss", none: "none", pending: "pending", off: "none off", future: "none future" }[stt];
     const word = future ? "Upcoming" : STATUS_WORD[stt];
-    const val = !future && stt !== "none" ? ` — ${goalValue(id, ctx.days[k], g)}` : "";
+    const val = !future && stt !== "none" && stt !== "off" ? ` — ${goalValue(id, ctx.days[k], g)}` : "";
     return `<div class="hc ${cls}${k === today ? " today" : ""}" style="--c:${color(id)}" ${tip(`${label(id)} · ${fmtDay(k)}`, `${word}${val}`)}>${stt === "hit" ? CHECK : stt === "miss" ? CROSS : ""}</div>`;
   }).join("")).join("");
   let hit = 0, miss = 0, none = 0;
@@ -321,7 +327,7 @@ export function heatmap(ctx) {
       ${rows}
       <div class="hl foot">Hit</div>${foot}
     </div>
-    <div class="legend small"><span>${CHECK} Hit</span><span>${CROSS} Missed</span><span><i class="nokey"></i>No data</span><span><i class="pendkey"></i>In progress</span></div>
+    <div class="legend small"><span>${CHECK} Hit</span><span>${CROSS} Missed</span><span><i class="nokey"></i>No data</span><span><i class="pendkey"></i>In progress</span>${g.plan && trackedIds(g).includes("workout") ? `<span><i class="offkey"></i>Planned rest</span>` : ""}</div>
   </section>`;
 }
 
@@ -854,6 +860,13 @@ export function dayDetails(ctx, key) {
       ${line("Carbs", val(d?.carbs, "g"), "carbs")}
       ${line("Fat", val(d?.fat, "g"), "fat")}
       ${line("Fiber", val(d?.fiber, "g"), "fiber")}
+      ${d?.food?.itemized ? MEALS.map((m) => {
+        const slot = d.food.byMeal[m.id];
+        if (!slot.entries.length) return "";
+        return `<div class="dl meal"><span><b>${m.label}</b></span><span><b>${fmtInt(slot.totals.kcal)}</b> kcal · ${esc(macroLine(slot.totals))}</span></div>
+          ${slot.entries.map((e) => `<div class="dl sub"><span>${esc(e.name)}</span><span>${fmtInt(e.kcal)} kcal ${srcTag(e.source)}</span></div>`).join("")}`;
+      }).join("") : ""}
+      ${d?.food?.quick && d.food.itemized ? `<div class="dl meal"><span><b>Quick add</b></span><span><b>${d.food.quick.kcal != null ? fmtInt(d.food.quick.kcal) : "—"}</b> kcal · ${esc(macroLine(d.food.quick))}</span></div>` : ""}
     </div>
     <div class="dsec"><h3>Sleep</h3>
       ${line("Bed → wake", d?.bed ? `<b>${esc(d.bed)} → ${esc(d.wake)}</b> · ${esc(fmtDur(sleepMinutes(d)))}` : `<span class="muted">Not logged</span>`, "bed")}
@@ -863,13 +876,14 @@ export function dayDetails(ctx, key) {
       ${line("Active calories", val(d?.activeKcal != null ? fmtInt(d.activeKcal) : null, "kcal"), "activeKcal")}
       ${line("Exercise", val(d?.exerciseMin, "min"), "exerciseMin")}
       ${ws.map((w) => `<div class="dl wk"><span><i style="--c:${typeColor(w.type)}"></i>${esc(w.type)}</span><span>${esc(w.start.slice(11, 16))}${w.durationMin != null ? ` · ${Math.round(w.durationMin)} min` : ""}${w.kcal != null ? ` · ${fmtInt(w.kcal)} kcal` : ""}${w.avgHR != null ? ` · ${Math.round(w.avgHR)} bpm` : ""}<span class="srcTag apple">Apple Health</span></span></div>`).join("")}
-      ${!ws.length && d?.workout ? line("Workout", "<b>Yes</b>", "workout") : ""}
+      ${!ws.length && d?.workout && !d?.lifts?.length ? line("Workout", "<b>Yes</b>", "workout") : ""}
+      ${(d?.lifts || []).map((l) => `<div class="dl"><span>${esc(l.exercise)}</span><span>${esc(setsText(l.sets))}<span class="srcTag manual">Logged by you</span></span></div>`).join("")}
     </div>
     <div class="dsec"><h3>Body &amp; habits</h3>
       ${line("Weight", val(d?.weight != null ? fmt1(d.weight) : null, "lb"), "weight")}
       ${line("Creatine", d?.creatine == null ? `<span class="muted">No data</span>` : `<b>${d.creatine ? "Taken" : "Skipped"}</b>`, "creatine")}
     </div>
-    <footer><button type="button" class="btn" data-close>Close</button><button type="button" class="btn primary" data-act="log" data-key="${key}">Edit log</button></footer>`;
+    <footer><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" data-act="food-open" data-key="${key}">Food diary</button><button type="button" class="btn primary" data-act="log" data-key="${key}">Edit log</button></footer>`;
 }
 
 /* ── settings ──────────────────────────────────────────────────────────── */
@@ -887,16 +901,22 @@ const ICONS = {
   pen: `<svg viewBox="0 0 20 20"><path d="M4 16l.8-3.2L13.5 4a1.6 1.6 0 0 1 2.3 0l.2.2a1.6 1.6 0 0 1 0 2.3L7.2 15.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
   trash: `<svg viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   chevron: `<svg viewBox="0 0 20 20"><path d="M8 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  dumbbell: `<svg viewBox="0 0 20 20"><path d="M3 8v4M17 8v4M5.5 6v8M14.5 6v8M5.5 10h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  search: `<svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.8 12.8l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  trophy: `<svg viewBox="0 0 20 20"><path d="M6 3.5h8v4a4 4 0 0 1-8 0zM6 5H3.5v1.2A2.8 2.8 0 0 0 6.3 9M14 5h2.5v1.2A2.8 2.8 0 0 1 13.7 9M10 11.5v3M7 16.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 const SECTIONS = {
   goals: { title: "Goals", color: "#F3E96C" },
   apple: { title: "Apple Health", color: "#F08A78" },
   sources: { title: "Data sources", color: "#8EDB57" },
   display: { title: "Dashboard defaults", color: "#5CC8F0" },
+  training: { title: "Training plan", color: "#8EDB57" },
+  food: { title: "Food lookup", color: "#45B3C8" },
+  achievements: { title: "Achievements", color: "#F2A79C" },
   security: { title: "Sign-in & security", color: "#9D8CF5" },
   data: { title: "Your data", color: "#62D6C4" },
 };
-const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", security: "lock", data: "data" };
+const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", food: "search", achievements: "trophy", security: "lock", data: "data" };
 
 function secHead(id, desc) {
   const s = SECTIONS[id];
@@ -918,10 +938,16 @@ function overview(ctx) {
   const sync = ctx.state.lastSync?.at ? `Synced ${ago(new Date(ctx.state.lastSync.at))}` : (st.tokens?.length || st.envToken) ? "Waiting for first sync" : "Not connected";
   const pw = st.password?.source === "settings" ? "Password set here" : st.password?.source === "railway" ? "Password from Railway" : "No password";
   const n = ctx.state.demo ? 0 : Object.keys(ctx.days).length;
+  const plan = ctx.g.plan;
+  const count = (t) => (plan ? Object.values(plan.days).filter((x) => x === t).length : 0);
+  const fl = st.food;
   const rows = [
     ["goals", `${fmtInt(g.kcalTarget)} kcal · ${g.protein}g protein · ${fmt1(g.goalWeight)} lb`],
     ["apple", sync],
     ["sources", "Food & sleep manual only"],
+    ["food", fl ? `USDA ${fl.usda.set ? "key" : "demo key"}${fl.fatsecretId.set ? " · FatSecret" : ""}${fl.offEnabled ? " · Open Food Facts" : ""} · AI ${fl.anthropic.set ? "on" : "off"}` : ""],
+    ["training", plan ? `${count("strength")} strength · ${count("cardio")} cardio · ${count("any")} any · ${count("rest")} rest` : "No plan yet"],
+    ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
     ["data", `${n} day${n === 1 ? "" : "s"} stored`],
@@ -958,6 +984,12 @@ function goalsSection(ctx) {
       <label class="field"><span>Target bedtime</span><span class="inp"><input type="time" name="bedTarget" value="${esc(g.bedTarget)}" required></span></label>
       <label class="field"><span>Target wake</span><span class="inp"><input type="time" name="wakeTarget" value="${esc(g.wakeTarget)}" required></span></label>
     </div>
+    <h3>Weekly calories</h3>
+    <div class="fields">
+      ${num("weeklyTarget", "Weekly target (0 = 7 × daily)", g.weeklyTarget || 0, 50, "kcal")}
+      ${num("maintenance", "Estimated maintenance", g.maintenance, 10, "kcal")}
+    </div>
+    <p class="hint small">Maintenance is context only — the site never treats eating below your range as better, and never suggests making up for a higher day by eating less than your range.</p>
     <h3>Counted in the daily score</h3>
     <div class="checks">${checks}</div>
     <div class="actions"><button class="btn primary" type="submit">Save goals</button><span class="saved" data-saved hidden>Saved</span></div>
@@ -1035,8 +1067,10 @@ function sourcesSection(ctx) {
     ${secHead("sources", "Every number knows where it came from. Apple Health can only fill the metrics below it's allowed to — anything else it sends is dropped before it's stored.")}
     <div class="rules">
       <div><h3>Logged by you only</h3>
+        ${rule("Food diary entries and their totals", '<span class="srcTag manual">Manual</span>')}
         ${rule("Calories, protein, carbs, fat, fiber", '<span class="srcTag manual">Manual</span>')}
         ${rule("Sleep (bedtime → wake)", '<span class="srcTag manual">Manual</span>')}
+        ${rule("Lifts (sets × reps × weight)", '<span class="srcTag manual">Manual</span>')}
         ${rule("Creatine", '<span class="srcTag manual">Manual</span>')}
       </div>
       <div><h3>Apple Health allowed</h3>
@@ -1084,6 +1118,85 @@ function reviewSection(ctx) {
   </form>`;
 }
 
+function trainingSection(ctx) {
+  const plan = ctx.g.plan;
+  const saved = ctx.state.demo ? ctx.state.savedPlan : plan;
+  const selects = WEEKDAYS.map((d) => `<label class="field"><span>${WEEKDAY_LABELS[d]}</span><span class="inp"><select name="${d}">${PLAN_TYPES.map((t) =>
+    `<option value="${t}"${(plan?.days?.[d] || "rest") === t ? " selected" : ""}>${PLAN_LABELS[t]}</option>`).join("")}</select></span></label>`).join("");
+  return `<form class="card sc" id="sec-training" data-form="plan">
+    ${secHead("training", "The week you're aiming for. Planned rest days never count as a missed workout, and Training Consistency badges measure each week against this plan — moving a session to another day that week is fine.")}
+    ${ctx.state.demo && !saved ? `<p class="hint small">Showing the sample plan. Save to make it yours.</p>` : ""}
+    <div class="fields seven">${selects}</div>
+    <div class="fields"><label class="field"><span>Plan applies from</span><span class="inp"><input type="date" name="since" value="${esc(plan?.since || "")}"></span></label></div>
+    <p class="hint small">Weeks before this date aren't judged against the plan. Leave it empty to apply the plan to your whole history.</p>
+    <div class="actions"><button class="btn primary" type="submit">Save plan</button>${saved ? `<button type="button" class="btn danger ghost" data-act="plan-clear">Remove plan</button>` : ""}<span class="saved" data-saved hidden></span></div>
+  </form>`;
+}
+
+function foodSection(ctx) {
+  const f = ctx.settings?.food;
+  if (!f) return "";
+  const keyField = (name, info, label, placeholder) => `<div class="keyrow">
+      <label class="field"><span>${label}</span><span class="inp"><input type="password" name="${name}" autocomplete="off" spellcheck="false"
+        placeholder="${esc(info.set ? `${info.preview} — ${info.source === "railway" ? "from Railway" : "saved here"}` : placeholder)}"></span></label>
+      ${info.source === "settings" ? `<button type="button" class="btn danger ghost" data-act="foodkey-clear" data-k="${name}">Remove</button>` : ""}
+    </div>`;
+  const test = (id) => `<button type="button" class="btn" data-act="food-test" data-v="${id}">Test</button><span class="testres" data-test="${id}"></span>`;
+  const status = (on, text) => `<span class="pstat${on ? " on" : ""}"><i></i>${text}</span>`;
+  return `<form class="card sc" id="sec-food" data-form="foodapis">
+    ${secHead("food", "Where food search looks, most trusted first. Every result says where its numbers came from, and nothing is saved until you confirm it. Keys are stored in your database, never shown in full, and take priority over Railway variables.")}
+    <div class="provs">
+      <div class="prov-s">
+        <div class="ps-h"><b>1 · USDA FoodData Central</b>${status(true, f.usda.set ? "Your key" : "Shared demo key")}</div>
+        <p>Branded foods are the manufacturer's own label data (shown as <span class="srcTag verified">Verified</span>); USDA's generic foods cover eggs, rice, chicken and the like (<span class="srcTag database">Database</span>). Free. The shared demo key allows only a few searches an hour — a free personal key allows about 1,000. <a href="${esc(f.usdaSignup)}" target="_blank" rel="noopener noreferrer">Get a free key ↗</a></p>
+        ${keyField("usdaKey", f.usda, "API key", "Paste your data.gov key")}
+        <div class="actions">${test("usda")}</div>
+      </div>
+      <div class="prov-s">
+        <div class="ps-h"><b>2 · FatSecret</b> <span class="muted">optional</span>${status(f.fatsecretId.set && f.fatsecretSecret.set, f.fatsecretId.set && f.fatsecretSecret.set ? "Connected" : "Not set")}</div>
+        <p>Adds brand and chain-restaurant foods (<span class="srcTag database">Database</span>). The free Basic plan allows 5,000 calls a day with attribution. FatSecret only answers servers whose IP address is on your key's allow-list, and Railway's outbound IP can change unless you enable static IPs.</p>
+        <div class="fields two">${keyField("fatsecretId", f.fatsecretId, "Client ID", "Client ID")}${keyField("fatsecretSecret", f.fatsecretSecret, "Client secret", "Client secret")}</div>
+        <div class="actions">${test("fatsecret")}</div>
+      </div>
+      <div class="prov-s">
+        <div class="ps-h"><b>3 · Open Food Facts</b>${status(f.offEnabled, f.offEnabled ? "On" : "Off")}</div>
+        <p>Community-entered packaged foods — wide coverage, uneven accuracy, so results say “check against your label”. Free, no key; the server keeps under its 10-searches-a-minute limit.</p>
+        <div class="toggles"><label class="chk"><input type="checkbox" name="offEnabled"${f.offEnabled ? " checked" : ""}><i style="--c:#45B3C8"></i>Search Open Food Facts</label></div>
+        <div class="actions">${test("off")}</div>
+      </div>
+      <div class="prov-s">
+        <div class="ps-h"><b>4 · AI estimates</b> <span class="muted">last resort</span>${status(f.anthropic.set, f.anthropic.set ? "On" : "Off")}</div>
+        <p>Only when you tap “Estimate with AI” — for things no database has, like a restaurant sandwich. Claude returns its best estimate with a confidence level, a calorie range and what it's based on; it's marked <span class="srcTag estimate">Estimated</span> everywhere and opens for you to check before anything is saved. Each estimate costs roughly a cent or two on your Anthropic account and is cached, so asking twice is free. If the model declines a request, it's retried on Anthropic's default fallback model.</p>
+        ${keyField("anthropicKey", f.anthropic, "Anthropic API key", "sk-ant-…")}
+        <label class="field"><span>Model</span><span class="inp"><select name="anthropicModel">${f.models.map((m) => `<option value="${esc(m.id)}"${m.id === f.model ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select></span></label>
+        <div class="actions">${test("anthropic")}</div>
+      </div>
+    </div>
+    <p class="hint small">Leave a key field empty to keep the key you have. Searches are cached for two weeks, and any food you log is saved to My foods, so repeat foods never need a lookup.</p>
+    <div class="actions"><button type="submit" class="btn primary">Save lookup settings</button><span class="saved" data-saved hidden></span></div>
+  </form>`;
+}
+
+function achievementsSection(ctx) {
+  const overrides = ctx.state.achievements?.tiers || {};
+  const days = ctx.days;
+  const keys = Object.keys(days).filter((k) => k <= ctx.today).sort();
+  const lifted = keys.filter((k) => days[k]?.lifts?.length);
+  const rows = DEFAULT_CATALOG.map((c) => {
+    const tiers = overrides[c.id] || c.tiers;
+    return `<div class="tierrow">
+      <div class="sl"><b>${esc(c.name)}</b><span>${esc(c.unit)} · default ${c.tiers.map((n) => n.toLocaleString("en-US")).join(", ")}</span></div>
+      <div class="tierin">${tiers.map((n, i) => `<span class="inp"><input type="number" name="${c.id}-${i}" min="0" step="any" value="${n}" aria-label="${esc(c.name)} tier ${i + 1}"></span>`).join("")}</div>
+    </div>`;
+  }).join("");
+  return `<form class="card sc" id="sec-achievements" data-form="tiers">
+    ${secHead("achievements", "What each badge tier takes. Progress, unlocks and unlock dates recalculate from your data the moment you save.")}
+    ${rows}
+    <p class="hint small">${lifted.length ? `Iron so far: ${lifted.length} logged session${lifted.length === 1 ? "" : "s"}.` : "No lifting sets logged yet, so Iron's defaults are a starting point — adjust them once a few weeks of sets show your typical volume."} Each tier must be larger than the one before.</p>
+    <div class="actions"><button type="submit" class="btn primary">Save thresholds</button><button type="button" class="btn" data-act="tiers-reset">Reset to defaults</button><span class="saved" data-saved hidden></span><span class="err" data-err hidden></span></div>
+  </form>`;
+}
+
 function displaySection(ctx) {
   const p = ctx.state.prefs || {};
   return `<section class="card sc" id="sec-display">
@@ -1128,7 +1241,7 @@ function dataSection(ctx) {
     ${secHead("data", ctx.state.demo ? "Showing sample days — nothing is stored yet." : `${n} day${n === 1 ? "" : "s"} stored.`)}
     <span class="saved" data-saved hidden></span>
     ${row("Stored in", esc(where), "")}
-    ${row("Backup", "A JSON file of every day and your goals. Import replaces what's stored.",
+    ${row("Backup", "A JSON file of every day, your goals, saved foods, meals, rewards and training plan. Import replaces the stored days.",
       `<div class="actions"><button type="button" class="btn" data-act="export">Export</button>
         <label class="btn">Import<input type="file" accept="application/json,.json" id="importfile" hidden></label></div>`)}
     ${ctx.state.demo ? "" : row("Erase all days", "Removes every logged and synced day. Goals, tokens and settings stay.",
@@ -1142,6 +1255,9 @@ export function settings(ctx) {
     ${goalsSection(ctx)}
     ${appleSection(ctx)}
     ${sourcesSection(ctx)}
+    ${foodSection(ctx)}
+    ${trainingSection(ctx)}
+    ${achievementsSection(ctx)}
     ${displaySection(ctx)}
     ${securitySection(ctx)}
     ${dataSection(ctx)}
@@ -1155,7 +1271,7 @@ export const PAGES = {
   today: {
     title: "Today",
     render: (ctx) => `${pageHeader(ctx, "Today")}${demoBanner(ctx)}${reviewNudge(ctx)}
-      <div class="grid top">${scoreCard(ctx)}${statCards(ctx)}</div>
+      <div class="grid top">${scoreCard(ctx)}<div class="topright">${nextUnlockCard(ctx)}${statCards(ctx)}</div></div>
       <div class="grid three">${calorieCard(ctx)}${macroCard(ctx)}${todayVsAvg(ctx)}</div>
       <div class="grid wide-right">${heatmap(ctx)}${streaksCard(ctx)}</div>
       <div class="grid wide-right">${weeklyReviewCard(ctx)}${consistencyCard(ctx)}</div>
@@ -1170,14 +1286,21 @@ export const PAGES = {
   },
   nutrition: {
     title: "Nutrition",
-    render: (ctx) => `${pageHeader(ctx, "Nutrition", false)}${demoBanner(ctx)}${reviewNudge(ctx)}
-      <div class="grid three">${calorieCard(ctx)}${macroCard(ctx)}${todayVsAvg(ctx)}</div>
-      ${nutritionTrends(ctx)}`,
+    render: (ctx) => {
+      const key = foodDay(ctx);
+      return `${pageHeader(ctx, "Nutrition", false)}${demoBanner(ctx)}${reviewNudge(ctx)}
+      <div class="grid three">${calorieCard(ctx, key)}${macroCard(ctx, key)}${dailySummaryCard(ctx, key)}</div>
+      <div class="grid wide-right">${foodDiaryCard(ctx, key)}<div class="sidecol">${weeklyBudgetCard(ctx)}${todayVsAvg(ctx)}</div></div>
+      ${nutritionTrends(ctx)}
+      ${foodHistoryCard(ctx)}
+      ${libraryCard(ctx)}`;
+    },
   },
   fitness: {
     title: "Fitness",
     render: (ctx) => `${pageHeader(ctx, "Fitness", false)}${demoBanner(ctx)}
       <div class="grid wide-right">${activityCard(ctx)}${fitnessStatsCard(ctx)}</div>
+      ${strengthCard(ctx)}
       ${workoutWeekCard(ctx)}
       <div class="grid wide-right">${exerciseWeeksCard(ctx)}${workoutMixCard(ctx)}</div>
       ${activityCalendar(ctx)}
@@ -1188,6 +1311,10 @@ export const PAGES = {
     render: (ctx) => `${pageHeader(ctx, "Sleep", false)}${demoBanner(ctx)}${reviewNudge(ctx)}
       ${sleepCard(ctx)}
       <p class="hint pagehint">Sleep comes only from what you log — Apple Watch sleep is never used. Add last night from <b>Log today</b>.</p>`,
+  },
+  achievements: {
+    title: "Achievements",
+    render: (ctx) => `${pageHeader(ctx, "Achievements", false)}${demoBanner(ctx)}${achievementsPage(ctx, ctx.fresh)}`,
   },
   calendar: {
     title: "Calendar",
@@ -1200,9 +1327,13 @@ export const PAGES = {
 };
 PAGES.activity = PAGES.fitness; // old links
 
+/** The day the Nutrition page shows: the diary's chosen day, never the future. */
+export const foodDay = (ctx) => (ctx.ui.foodDay && ctx.ui.foodDay <= ctx.today ? ctx.ui.foodDay : ctx.today);
+
 /* ── measured charts ───────────────────────────────────────────────────── */
 
 export const CHARTS = {
+  pacing: (ctx, width) => pacingChart(pacingRows(ctx), { width, daily: ctx.g.kcalTarget, color: color("calories"), fmtDay }),
   weight: (ctx, width) => {
     const [a, b] = weightWindow(ctx);
     return weightChart(weightSeries(ctx.days, a, b), {

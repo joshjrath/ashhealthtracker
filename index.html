@@ -29,6 +29,8 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M13.5 3.5a6.8 6.8 0 1 0 3 9.8 5.4 5.4 0 0 1-3-9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Sleep</a>
         <a href="#/calendar" data-page="calendar">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12.5" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 8.5h14M7 2.8v3M13 2.8v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Calendar</a>
+        <a href="#/achievements" data-page="achievements">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3.5h8v4a4 4 0 0 1-8 0zM6 5H3.5v1.2A2.8 2.8 0 0 0 6.3 9M14 5h2.5v1.2A2.8 2.8 0 0 1 13.7 9M10 11.5v3M7 16.5h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="nl">Achievements</span><span class="navcount" id="achnav"></span></a>
       </nav>
       <h3>Log</h3>
       <button type="button" class="logbtn" data-act="log">
@@ -52,7 +54,7 @@
       <button type="button" class="x" data-close aria-label="Close">×</button>
     </header>
     <label class="field wide"><span>Date</span><span class="inp"><input type="date" name="date" required></span></label>
-    <h3 class="dlg-h">Food <span>logged by you only</span></h3>
+    <h3 class="dlg-h">Food <span>quick-add totals, logged by you only — itemised diary entries add to these</span></h3>
     <div class="fields">
       <label class="field"><span>Calories</span><span class="inp"><input type="number" name="kcal" step="1" min="0" inputmode="numeric"><em>kcal</em></span></label>
       <label class="field"><span>Protein</span><span class="inp"><input type="number" name="protein" step="1" min="0" inputmode="numeric"><em>g</em></span></label>
@@ -91,6 +93,13 @@
 </dialog>
 
 <dialog id="daydlg" aria-label="Day details"><div class="daybody"></div></dialog>
+
+<dialog id="fooddlg" class="sheet" aria-label="Add food"><div class="fsbody"></div></dialog>
+
+<dialog id="paneldlg" aria-label="Details"><div class="panelbody"></div></dialog>
+
+<div id="celebrate" class="celebrate" role="status" aria-live="polite" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <div id="tip" role="tooltip" hidden></div>
 <script type="module" src="js/app.js"></script>
