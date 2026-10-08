@@ -64,10 +64,20 @@ Nothing rewards eating less: Nutrition Consistency counts complete food days *in
 
 The catalog is data. New families that use an existing measurement (goal days, goal streaks, workouts of a type, summed fields like steps, progressive-overload increases, strength sessions) need no new code.
 
+## Backups & rollback
+
+Your log is backed up on its own — every 3 hours by default (changeable in **Settings → Backups & rollback**), every time the server starts (so before every update touches anything), and before anything that replaces data (erase, import, sorting older entries, a rollback). Unchanged data is never stored twice. Each backup can be rolled back to or downloaded, and rolling back first backs up the present, so it can be undone. Kept: everything from the last 2 days, the newest of each day for 30 days, one a week for 6 months, plus up to 30 you make yourself.
+
+Backups hold your days, diary, lifts, saved foods, meals, rewards, goals, plan and achievement settings — not your password, upload tokens or lookup keys, so a rollback can never lock you out.
+
+Each browser you use also keeps a recovery copy of your log. If the site ever comes back empty, every page offers to put back the server's latest backup or that copy.
+
+`npm test` includes a check that restarting the server on the same storage — which is what an update does — leaves every day, food, meal, reward and setting exactly as it was.
+
 ## Deploy to Railway
 
 1. **New Project → Deploy from GitHub repo →** `ashhealthtracker`. Railway reads `railway.json`: it runs `npm start` and health-checks `/healthz`.
-2. **+ New → Database → PostgreSQL** in the same project.
+2. **+ New → Database → PostgreSQL** in the same project. **Required:** Railway erases a service's own disk on every deploy, so without a database every update wipes your log. (A Railway volume works too; the server stores its file there automatically.)
 3. In the web service's **Variables**, add just two:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `APP_PASSWORD`: the password for your first sign-in
@@ -77,6 +87,8 @@ The catalog is data. New families that use an existing measurement (goal days, g
 Optional: `USDA_API_KEY`, `ANTHROPIC_API_KEY`, `FATSECRET_CLIENT_ID` / `FATSECRET_CLIENT_SECRET` — or paste the same keys in **Settings → Food lookup**.
 
 Nothing else needs Railway after that. The session-signing secret is generated and kept in the database. You can still set `SESSION_SECRET` or `INGEST_TOKEN` as variables if you prefer. On Railway, the site refuses to serve until a password exists. The server creates its tables on first start.
+
+**Data disappearing after updates?** Your data is on Railway's temporary disk: the server log says so at start, and every page shows a red warning. Export from **Settings → Your data**, do step 2 and the `DATABASE_URL` variable above, then import the file.
 
 **Locked out?** Add the variable `PASSWORD_RESET` = `1` and redeploy. The password set in Settings is cleared and `APP_PASSWORD` works again. Remove the variable afterwards.
 
@@ -88,7 +100,9 @@ server/app.mjs    HTTP routes: login, the page's JSON API, /api/ingest, static f
 server/apple.mjs  Apple Health payloads (Health Auto Export or plain JSON) → day fields
 server/food.mjs   food lookup: USDA, FatSecret, Open Food Facts → ranked candidates, cached
 server/ai.mjs     AI nutrition estimates (Claude), labelled as estimates
-server/db.mjs     Postgres storage (days, meta, items), or data/local.json without a DATABASE_URL
+server/storage.mjs where the log lives, and whether it survives an update
+server/backup.mjs  automatic backups, rollback, retention
+server/db.mjs     Postgres storage (days, meta, items, snapshots), or a JSON file without a DATABASE_URL
 server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit
 index.html        shell: rail, log dialog, food sheet, panel dialog, tooltip
 css/app.css       design tokens shared with Specular + every component
@@ -106,6 +120,7 @@ js/diary.js       the Nutrition page's food panels
 js/foodsheet.js   the add-food sheet: search, suggestions, editing, custom foods, meals
 js/trophies.js    Next unlock, trophy room, badge details, rewards, the unlock moment
 js/strength.js    the Strength card and the lift log
+js/recovery.js    this browser's recovery copy of your log
 js/app.js         routing, measured chart mounting, tooltip, dialogs, settings
 test/             node --test suites. On Postgres, one file at a time (they share the database):
                   TEST_DATABASE_URL=postgres://… node --test --test-concurrency=1 test/*.test.js

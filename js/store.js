@@ -55,6 +55,11 @@ export const api = {
   putPlan: (plan) => call("PUT", "/api/plan", plan),
   putTiers: (tiers) => call("PUT", "/api/achievement-tiers", tiers),
   ledger: (body) => call("POST", "/api/achievements/ledger", body),
+
+  backups: () => call("GET", "/api/backups"),
+  backupNow: () => call("POST", "/api/backups", {}),
+  setBackupEvery: (everyHours) => call("PUT", "/api/backups/settings", { everyHours }),
+  restoreBackup: (id) => call("POST", `/api/backups/${encodeURIComponent(id)}/restore`, {}),
 };
 
 /** Check a file before sending it: it must look like an export. */
@@ -62,9 +67,11 @@ export function readExport(text) {
   const s = JSON.parse(text);
   if (!s || typeof s !== "object" || typeof s.days !== "object" || Array.isArray(s.days)) throw new Error("Not an Ash Health export");
   const out = { days: s.days, goals: { ...DEFAULT_GOALS, ...s.goals } };
-  // Newer exports also carry your saved foods, meals, rewards and training plan.
+  // Newer exports and backups also carry your library, training plan, achievement settings and defaults.
   if (s.library && typeof s.library === "object") out.library = s.library;
   if (s.plan !== undefined) out.plan = s.plan;
+  if (s.achievements && typeof s.achievements === "object") out.achievements = s.achievements;
+  if (s.prefs && typeof s.prefs === "object") out.prefs = s.prefs;
   return out;
 }
 

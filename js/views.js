@@ -112,9 +112,38 @@ export function pageHeader(ctx, title, withGoals = true) {
   </header>`;
 }
 
+const whenText = (iso) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+/**
+ * Shown on every page when it matters: the log came back empty but a
+ * backup exists, or the data sits somewhere an update will erase it.
+ */
+export function safetyNotices(ctx) {
+  const b = ctx.state.backup;
+  let out = "";
+  const rec = b?.recovery;
+  const copy = ctx.state.localCopy;
+  if (rec || copy?.days) {
+    const parts = [];
+    if (rec) parts.push(`the server backed up ${rec.summary.days} day${rec.summary.days === 1 ? "" : "s"} on ${esc(whenText(rec.createdAt))}`);
+    if (copy?.days) parts.push(`this browser kept a copy with ${copy.days} day${copy.days === 1 ? "" : "s"} from ${esc(whenText(copy.savedAt))}`);
+    out += `<div class="banner recover"><span><b>Your log is empty — but it can be put back:</b> ${parts.join("; ")}.</span>
+      ${rec ? `<button type="button" class="btn light" data-act="backup-restore" data-id="${esc(rec.id)}" data-when="${esc(whenText(rec.createdAt))}">Restore the backup</button>` : ""}
+      ${copy?.days ? `<button type="button" class="btn${rec ? "" : " light"}" data-act="recover-copy">Restore this browser's copy</button>` : ""}
+    </div>`;
+  }
+  if (b && !b.persistent) {
+    out += `<div class="banner danger"><span><b>Your data is on a temporary disk.</b> Railway erases it every time the site updates. Download a backup now, then connect a database once — Settings → Backups shows how.</span>
+      <button type="button" class="btn" data-act="export">Download backup</button>
+      <a class="btn light" href="#/settings" data-jump="sec-backups">How to fix</a></div>`;
+  }
+  return out;
+}
+
 export function demoBanner(ctx) {
-  if (!ctx.state.demo || ctx.ui.demoHidden) return "";
-  return `<div class="banner">
+  const safety = safetyNotices(ctx);
+  if (!ctx.state.demo || ctx.ui.demoHidden) return safety;
+  return `${safety}<div class="banner">
     <span><b>Sample data.</b> Made-up days so every chart has something to show, until your first real log or Apple Health sync.</span>
     <button type="button" class="btn" data-act="demo-hide">Keep exploring</button>
     <button type="button" class="btn light" data-act="demo-clear">Start my own log</button>
@@ -903,6 +932,7 @@ const ICONS = {
   chevron: `<svg viewBox="0 0 20 20"><path d="M8 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   dumbbell: `<svg viewBox="0 0 20 20"><path d="M3 8v4M17 8v4M5.5 6v8M14.5 6v8M5.5 10h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   search: `<svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.8 12.8l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  shield: `<svg viewBox="0 0 20 20"><path d="M10 2.8l6 2.4v4.6c0 3.6-2.5 6.3-6 7.4-3.5-1.1-6-3.8-6-7.4V5.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.2 10l2 2 3.8-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   trophy: `<svg viewBox="0 0 20 20"><path d="M6 3.5h8v4a4 4 0 0 1-8 0zM6 5H3.5v1.2A2.8 2.8 0 0 0 6.3 9M14 5h2.5v1.2A2.8 2.8 0 0 1 13.7 9M10 11.5v3M7 16.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 const SECTIONS = {
@@ -915,8 +945,9 @@ const SECTIONS = {
   achievements: { title: "Achievements", color: "#F2A79C" },
   security: { title: "Sign-in & security", color: "#9D8CF5" },
   data: { title: "Your data", color: "#62D6C4" },
+  backups: { title: "Backups & rollback", color: "#56C990" },
 };
-const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", food: "search", achievements: "trophy", security: "lock", data: "data" };
+const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", food: "search", achievements: "trophy", security: "lock", data: "data", backups: "shield" };
 
 function secHead(id, desc) {
   const s = SECTIONS[id];
@@ -950,6 +981,7 @@ function overview(ctx) {
     ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
+    ["backups", !st.backups ? "" : !st.backups.persistent ? "⚠ Erased on every update" : st.backups.everyHours ? `Every ${st.backups.everyHours}h${st.backups.lastAt ? ` · last ${ago(new Date(st.backups.lastAt))}` : ""}` : "Automatic backups off"],
     ["data", `${n} day${n === 1 ? "" : "s"} stored`],
   ];
   return `<nav class="card overview" aria-label="Settings sections">${rows.map(([id, value]) =>
@@ -1234,9 +1266,50 @@ function securitySection(ctx) {
   </section>`;
 }
 
+function backupsSection(ctx) {
+  const st = ctx.settings?.backups;
+  if (!st) return "";
+  const where = ctx.settings.storageWhere || "";
+  const storage = st.persistent
+    ? `<div class="sync ok"><span class="dot"></span><div><b>Your data survives updates</b><span>Stored in ${esc(where)}.</span></div></div>`
+    : `<div class="sync bad"><span class="dot"></span><div><b>Your data is erased every time the site updates</b><span>It's on Railway's temporary disk — that's why updates have been resetting your log. Fix it once:</span></div></div>
+      <ol class="fixsteps">
+        <li><b>Download your data now:</b> <button type="button" class="btn" data-act="export">Export</button></li>
+        <li>In Railway, open this project and choose <b>+ New → Database → Add PostgreSQL</b>.</li>
+        <li>Open the web service → <b>Variables → New variable</b>: name <code>DATABASE_URL</code>, value <code>\${{Postgres.DATABASE_URL}}</code>. Railway redeploys the site.</li>
+        <li>Back here, <b>Settings → Your data → Import</b> the file from step 1. This box turns green, and updates never touch your data again.</li>
+      </ol>`;
+  const sched = `<div class="tabs" role="radiogroup">${st.choices.map((h) => `<button type="button" role="radio" class="tab${h === st.everyHours ? " on" : ""}" aria-checked="${h === st.everyHours}"
+      data-act="backup-every" data-v="${h}">${h === 0 ? "Off" : h === 24 ? "Daily" : `${h}h`}</button>`).join("")}</div>`;
+  const kindWord = { auto: "Automatic", boot: "Before an update", safety: "Safety", manual: "By you" };
+  const kb = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+  const rows = st.snapshots.slice(0, 40).map((b) => {
+    const sm = b.summary || {};
+    const what = [`${sm.days} day${sm.days === 1 ? "" : "s"}`, sm.entries ? `${fmtInt(sm.entries)} diary entries` : null, sm.foods ? `${sm.foods} saved foods` : null, sm.rewards ? `${sm.rewards} rewards` : null].filter(Boolean).join(" · ");
+    return `<div class="bkrow">
+      <div class="bk-main"><b>${esc(whenText(b.createdAt))}</b><span><em class="bkkind ${esc(b.kind)}">${esc(kindWord[b.kind] || b.kind)}</em> ${esc(b.reason)} · ${esc(what)} · ${kb(b.bytes)}</span></div>
+      <div class="bk-acts"><a class="btn" href="/api/backups/${encodeURIComponent(b.id)}/download" download>Download</a>
+        <button type="button" class="btn" data-act="backup-restore" data-id="${esc(b.id)}" data-when="${esc(whenText(b.createdAt))}">Roll back</button></div>
+    </div>`;
+  }).join("");
+  const copy = ctx.state.copyInfo;
+  return `<section class="card sc" id="sec-backups">
+    ${secHead("backups", "Rollback points for everything you've logged. Taken automatically, before every update, and before anything that replaces data — and any rollback can itself be undone.")}
+    ${storage}
+    ${row("Automatic backups", "How often to back up, if anything changed. Unchanged data is never stored twice.", sched)}
+    ${row("Latest", st.lastAt ? `Last backup ${esc(ago(new Date(st.lastAt)))}${st.nextAt && st.everyHours ? ` · next check ${esc(whenText(st.nextAt))}` : ""} · ${st.count} kept` : "No backups yet — one is made as soon as there's data.",
+      `<button type="button" class="btn primary" data-act="backup-now">Back up now</button>`)}
+    <h3>Rollback points</h3>
+    <div class="bklist">${rows || `<div class="empty-row">None yet.</div>`}</div>
+    ${row("This browser's copy", copy ? `A recovery copy of your log is also kept in this browser (saved ${esc(whenText(copy.savedAt))} · ${copy.days} days), in case the server's storage is ever lost.` : "Each browser you use keeps a recovery copy of your log, refreshed as you use the site.",
+      copy ? `<div class="actions"><button type="button" class="btn" data-act="copy-download">Download</button><button type="button" class="btn danger ghost" data-act="copy-forget">Forget</button></div>` : "")}
+    <p class="hint small">Kept: everything from the last 2 days, the newest of each day for 30 days, then one a week for 6 months, plus up to 30 you make yourself. Backups hold your days, food diary, lifts, saved foods, meals, rewards, goals, training plan and achievement settings — not your password, upload tokens or lookup keys, so a rollback can never lock you out. To roll back the site's <i>code</i>, use Railway → Deployments → Redeploy on an earlier deployment; that never touches your data.</p>
+  </section>`;
+}
+
 function dataSection(ctx) {
   const n = Object.keys(ctx.days).length;
-  const where = ctx.settings?.storage === "postgres" ? "Postgres database on Railway" : "data/local.json on this computer";
+  const where = ctx.settings?.storageWhere || (ctx.settings?.storage === "postgres" ? "Postgres database" : "data/local.json on this computer");
   return `<section class="card sc" id="sec-data">
     ${secHead("data", ctx.state.demo ? "Showing sample days — nothing is stored yet." : `${n} day${n === 1 ? "" : "s"} stored.`)}
     <span class="saved" data-saved hidden></span>
@@ -1260,6 +1333,7 @@ export function settings(ctx) {
     ${achievementsSection(ctx)}
     ${displaySection(ctx)}
     ${securitySection(ctx)}
+    ${backupsSection(ctx)}
     ${dataSection(ctx)}
     ${reviewSection(ctx)}
   </div>`;
@@ -1322,7 +1396,7 @@ export const PAGES = {
   },
   settings: {
     title: "Settings",
-    render: (ctx) => `${pageHeader(ctx, "Settings", false)}${settings(ctx)}`,
+    render: (ctx) => `${pageHeader(ctx, "Settings", false)}${safetyNotices(ctx)}${settings(ctx)}`,
   },
 };
 PAGES.activity = PAGES.fitness; // old links

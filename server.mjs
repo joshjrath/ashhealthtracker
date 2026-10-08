@@ -3,20 +3,33 @@
 // defaults — is changed in the site's own Settings page. Locally, with
 // nothing set, it runs open on http://localhost:5173 and keeps the log in
 // data/local.json.
+//
+// Where the log lives decides whether it survives an update: see
+// server/storage.mjs. Railway's own disk does not.
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openStore } from "./server/db.mjs";
 import { createApp } from "./server/app.mjs";
+import { pickStorage } from "./server/storage.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
-const onRailway = !!(env.RAILWAY_ENVIRONMENT_NAME || env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID);
+const storage = pickStorage(env, root);
+const onRailway = storage.onRailway;
 
-const store = await openStore({
-  databaseUrl: env.DATABASE_URL,
-  file: env.DATA_FILE || join(root, "data", "local.json"),
-});
+if (!storage.persistent) {
+  console.error([
+    "",
+    "[web] ⚠ YOUR DATA IS ON RAILWAY'S TEMPORARY DISK — IT IS ERASED ON EVERY DEPLOY.",
+    "[web]   Fix: add a PostgreSQL database to this project, then add the variable",
+    "[web]   DATABASE_URL = ${{Postgres.DATABASE_URL}} to this service (or attach a volume).",
+    "[web]   Export your data from Settings first; import it after the redeploy.",
+    "",
+  ].join("\n"));
+}
+
+const store = await openStore({ databaseUrl: storage.databaseUrl, file: storage.file });
 
 // Sessions are signed with SESSION_SECRET if set, otherwise with a secret
 // made once and kept in the database, so sign-ins survive restarts.
@@ -41,6 +54,8 @@ const app = await createApp({
   secret,
   ingestToken: env.INGEST_TOKEN,
   requireAuth: onRailway,
+  storage,
+  version: env.RAILWAY_GIT_COMMIT_SHA || "",
   // Optional: food lookup keys can also be set in Settings → Food lookup.
   foodEnv: {
     usdaKey: env.USDA_API_KEY,
@@ -58,7 +73,7 @@ if (!env.APP_PASSWORD && !auth?.hash) {
 }
 
 const port = Number(env.PORT) || 5173;
-app.listen(port, () => console.log(`[web] Ash Health on :${port} (${store.kind} storage)`));
+app.listen(port, () => console.log(`[web] Ash Health on :${port} — data in ${storage.where}`));
 
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => app.close(() => store.close().finally(() => process.exit(0))));

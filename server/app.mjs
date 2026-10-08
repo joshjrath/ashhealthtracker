@@ -27,6 +27,13 @@
      PUT  /api/achievement-tiers      session  your own tier thresholds
      POST /api/achievements/ledger    session  { init: [ids] } first run · { ack: [ids] } celebrated
 
+   Backups (see backup.mjs):
+     GET  /api/backups                session  status, schedule, every backup
+     POST /api/backups                session  back up now
+     PUT  /api/backups/settings       session  { everyHours }
+     POST /api/backups/:id/restore    session  roll back (after backing up the present)
+     GET  /api/backups/:id/download   session  as an export file
+
    Settings — everything that used to mean editing Railway variables:
      GET  /api/settings               session  tokens (masked), password source, prefs
      PUT  /api/prefs                  session  dashboard defaults
@@ -53,6 +60,7 @@ import { cleanPlan } from "../js/training.js";
 import { DEFAULT_CATALOG } from "../js/achievements.js";
 import { createFoodLookup, USDA_SIGNUP } from "./food.mjs";
 import { createEstimator, AI_MODELS, DEFAULT_MODEL } from "./ai.mjs";
+import { createBackups, toExport } from "./backup.mjs";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BODY = 40 * 1024 * 1024; // a 90-day per-sample export can run to tens of MB
@@ -93,9 +101,13 @@ const FOOD_KEYS = ["usdaKey", "anthropicKey", "fatsecretId", "fatsecretSecret"];
  * `password` and `ingestToken` are the Railway variables: the starting
  * password and a fallback upload token. `foodEnv` holds the optional
  * lookup keys from Railway variables. Settings saved in the database win.
- * `fetch` and `makeClient` are for tests.
+ * `storage` says where the log lives and whether it survives an update
+ * (see storage.mjs). `fetch`, `makeClient` and `now` are for tests.
  */
-export async function createApp({ store, root, password, secret, ingestToken, requireAuth, foodEnv = {}, fetch, makeClient }) {
+export async function createApp({
+  store, root, password, secret, ingestToken, requireAuth, foodEnv = {}, fetch, makeClient,
+  storage = { persistent: true, where: store.kind }, version = "", now, backupSchedule = true,
+}) {
   const sess = sessions(secret);
   const loginLimit = limiter(5, 60_000);
   const pwLimit = limiter(5, 60_000);
@@ -124,7 +136,18 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     tail.then(() => { if (locks.get(key) === tail) locks.delete(key); });
     return run;
   };
+  // Before this version touches anything, back up what's there (skipped if
+  // nothing changed since the last backup). A failed backup is reported but
+  // doesn't keep the site down.
+  const backups = createBackups({ store, persistent: storage.persistent, version, ...(now ? { now } : {}) });
+  try {
+    const b = await backups.take(version ? `Before update ${version.slice(0, 7)} started` : "When the server started", { kind: "boot" });
+    if (b.snapshot) console.log(`[backup] Backed up ${b.snapshot.summary.days} days before starting.`);
+  } catch (e) {
+    console.error("[backup] Couldn't back up before starting:", e.message);
+  }
   await migrate(store);
+  if (backupSchedule) backups.start();
   const epoch = () => cfg.auth?.epoch ?? 0;
   const hasPassword = () => !!(cfg.auth?.hash || password);
   const isOpen = () => !hasPassword() && !requireAuth; // local use with no password anywhere
@@ -217,9 +240,9 @@ export async function createApp({ store, root, password, secret, ingestToken, re
 
   async function api(req, res, method, path) {
     if (path === "/api/state" && method === "GET") {
-      const [s, library, plan, tiers, catalog, ledger] = await Promise.all([
+      const [s, library, plan, tiers, catalog, ledger, bst, recovery] = await Promise.all([
         store.getAll(), loadLibrary(), store.getMeta("trainingPlan"), store.getMeta("achievementTiers"),
-        store.getMeta("achievementCatalog"), store.getMeta("achievementLedger"),
+        store.getMeta("achievementCatalog"), store.getMeta("achievementLedger"), backups.status(), backups.recovery(),
       ]);
       const k = foodKeys();
       return json(res, 200, {
@@ -228,8 +251,10 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         library, plan: plan || null,
         achievements: { tiers: tiers || {}, catalog: catalog || [], ledger: ledger || { initializedAt: null, entries: {} } },
         lookup: { usda: k.usdaKey ? "key" : "demo", fatsecret: !!(k.fatsecretId && k.fatsecretSecret), off: k.offEnabled, ai: !!k.anthropicKey },
+        backup: { persistent: storage.persistent, where: storage.where, everyHours: bst.everyHours, lastAt: bst.lastAt, count: bst.count, recovery },
       });
     }
+    if (path.startsWith("/api/backups")) return backupApi(req, res, method, path);
     if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/prefs")
       || path === "/api/password" || path === "/api/sessions/revoke" || path.startsWith("/api/food-apis")) {
       return settingsApi(req, res, method, path);
@@ -301,15 +326,9 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     }
     if (path === "/api/achievement-tiers" && method === "PUT") {
       const body = await readJson(req);
-      const out = {};
-      for (const def of DEFAULT_CATALOG) {
-        const t = body?.[def.id];
-        if (!Array.isArray(t)) continue;
-        const n = t.map(Number);
-        const ok = n.length === def.tiers.length && n.every((v, i) => Number.isFinite(v) && v > 0 && (i === 0 || v > n[i - 1]));
-        if (!ok) return json(res, 400, { error: `${def.name}: ${def.tiers.length} thresholds, each bigger than the last` });
-        if (n.some((v, i) => v !== def.tiers[i])) out[def.id] = n;
-      }
+      const bad = DEFAULT_CATALOG.find((def) => Array.isArray(body?.[def.id]) && !cleanTiers({ [def.id]: body[def.id] }));
+      if (bad) return json(res, 400, { error: `${bad.name}: ${bad.tiers.length} thresholds, each bigger than the last` });
+      const out = cleanTiers(body) || {};
       await store.setMeta("achievementTiers", out);
       return json(res, 200, { ok: true, tiers: out });
     }
@@ -329,6 +348,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       return json(res, 200, { ok: true, ledger });
     }
     if (path === "/api/days" && method === "DELETE") {
+      await backups.take("Before erasing every day", { kind: "safety" });
       await store.replaceDays({});
       return json(res, 200, { ok: true });
     }
@@ -342,6 +362,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       if (!body || typeof body.days !== "object" || Array.isArray(body.days)) return json(res, 400, { error: "Not an Ash Health export" });
       const days = {};
       for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
+      await backups.take("Before importing a file", { kind: "safety" });
       await store.replaceDays(days);
       if (body.goals) await store.setMeta("goals", cleanGoals(body.goals));
       // Exports since the food diary carry your library and training plan too.
@@ -353,6 +374,17 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         }
       }
       if (body.plan !== undefined) await store.setMeta("trainingPlan", cleanPlan(body.plan));
+      // Backups and recovery copies also carry achievement settings and dashboard defaults.
+      const tiers = cleanTiers(body.achievements?.tiers);
+      if (tiers) await store.setMeta("achievementTiers", tiers);
+      const ledger = body.achievements?.ledger;
+      if (ledger && typeof ledger === "object" && ledger.entries && typeof ledger.entries === "object") {
+        await store.setMeta("achievementLedger", { initializedAt: typeof ledger.initializedAt === "string" ? ledger.initializedAt : null, entries: ledger.entries });
+      }
+      if (body.prefs && typeof body.prefs === "object") {
+        cfg.prefs = cleanPrefs(body.prefs, cfg.prefs);
+        await store.setMeta("prefs", cfg.prefs);
+      }
       return json(res, 200, { ok: true, days: Object.keys(days).length, items });
     }
     if (path === "/api/review" && method === "GET") {
@@ -360,6 +392,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     }
     if (path === "/api/review" && method === "POST") {
       const body = await readJson(req);
+      await backups.take("Before sorting older entries", { kind: "safety" });
       const { days } = await store.getAll();
       let done = 0;
       for (const [list, keep] of [[body?.keep, true], [body?.reject, false]]) {
@@ -370,6 +403,33 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         }
       }
       return json(res, 200, { ok: true, done, items: reviewItems((await store.getAll()).days) });
+    }
+    return json(res, 404, { error: "Not found" });
+  }
+
+  async function backupApi(req, res, method, path) {
+    if (path === "/api/backups" && method === "GET") return json(res, 200, await backups.status());
+    if (path === "/api/backups" && method === "POST") {
+      const r = await backups.take("Backed up by you", { kind: "manual" });
+      return json(res, 200, { ok: true, ...r, status: await backups.status() });
+    }
+    if (path === "/api/backups/settings" && method === "PUT") {
+      const body = await readJson(req);
+      return json(res, 200, { ok: true, status: await backups.setEvery(Number(body?.everyHours)) });
+    }
+    const bm = path.match(/^\/api\/backups\/(bk_[a-z0-9]{1,40})\/(restore|download)$/);
+    if (bm && bm[2] === "restore" && method === "POST") {
+      const r = await backups.restore(bm[1]);
+      // What's held in memory follows the restored data.
+      cfg.prefs = { ...DEFAULT_PREFS, ...((await store.getMeta("prefs")) || {}) };
+      return json(res, 200, { ok: true, ...r });
+    }
+    if (bm && bm[2] === "download" && method === "GET") {
+      const found = await backups.load(bm[1]);
+      if (!found) return json(res, 404, { error: "That backup no longer exists" });
+      const name = `ash-health-backup-${found.info.createdAt.slice(0, 16).replace(/[:T]/g, "-")}.json`;
+      res.writeHead(200, { ...HEADERS, "content-type": "application/json", "cache-control": "no-store", "content-disposition": `attachment; filename="${name}"` });
+      return res.end(JSON.stringify(toExport(found.payload, found.info.createdAt)));
     }
     return json(res, 404, { error: "Not found" });
   }
@@ -439,6 +499,8 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         open: isOpen(),
         fieldsSeen: (await store.getMeta("fieldsSeen")) || null,
         food: foodView(),
+        backups: await backups.status(),
+        storageWhere: storage.where,
       });
     }
     if (path === "/api/food-apis" && method === "PUT") {
@@ -472,13 +534,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
         : { ok: false, message: note || "Didn't answer" });
     }
     if (path === "/api/prefs" && method === "PUT") {
-      const body = await readJson(req);
-      const next = { ...cfg.prefs };
-      for (const [k, allowed] of Object.entries(PREFS)) {
-        if (!(k in (body || {}))) continue;
-        const v = allowed.find((a) => String(a) === String(body[k]));
-        if (v !== undefined) next[k] = v;
-      }
+      const next = cleanPrefs(await readJson(req), cfg.prefs);
       cfg.prefs = next;
       await store.setMeta("prefs", next);
       return json(res, 200, { ok: true, prefs: next });
@@ -553,7 +609,7 @@ export async function createApp({ store, root, password, secret, ingestToken, re
     }
   }
 
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     handle(req, res).catch((err) => {
       const status = err.status || 500;
       if (status >= 500) console.error("[web]", req.method, req.url, err);
@@ -561,6 +617,9 @@ export async function createApp({ store, root, password, secret, ingestToken, re
       else res.end();
     });
   });
+  server.on("close", () => backups.stop());
+  server.backups = backups;
+  return server;
 }
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
@@ -588,6 +647,31 @@ export async function migrate(store) {
   }
   await store.setMeta("schema", 2);
   if (moved) console.log(`[web] Moved ${moved} days to per-source storage; food and sleep from before await review in Settings.`);
+}
+
+function cleanPrefs(raw, base) {
+  const next = { ...base };
+  for (const [k, allowed] of Object.entries(PREFS)) {
+    if (!(k in (raw || {}))) continue;
+    const v = allowed.find((a) => String(a) === String(raw[k]));
+    if (v !== undefined) next[k] = v;
+  }
+  return next;
+}
+
+/** Tier overrides: only valid lists (same length, each larger), only where they differ from the defaults. */
+function cleanTiers(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const def of DEFAULT_CATALOG) {
+    const t = raw[def.id];
+    if (!Array.isArray(t)) continue;
+    const n = t.map(Number);
+    const ok = n.length === def.tiers.length && n.every((v, i) => Number.isFinite(v) && v > 0 && (i === 0 || v > n[i - 1]));
+    if (!ok) return null;
+    if (n.some((v, i) => v !== def.tiers[i])) out[def.id] = n;
+  }
+  return out;
 }
 
 function cleanGoals(raw) {

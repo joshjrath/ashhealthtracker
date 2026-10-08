@@ -18,6 +18,7 @@ import { cleanPlan, WEEKDAYS } from "./training.js";
 import { cleanMeal, cleanReward, cleanFood, newId } from "./library.js";
 import { dayLabel } from "./diary.js";
 import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, closeSheet } from "./foodsheet.js";
+import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
 
 /*
  * state.raw  — days as stored: { manual, apple, legacy } buckets (sample days while demo is on)
@@ -52,6 +53,11 @@ async function refresh() {
   };
   if (demo) state.achievements = { ...state.achievements, ledger: null }; // a sample ledger is made on first draw
   settingsInfo = st;
+  // This browser's recovery copy: refreshed from real data, offered back if the log ever comes back empty.
+  const empty = !Object.keys(s.days).length && !lib.foods.length && !lib.meals.length && !lib.rewards.length;
+  if (!empty) await saveCopy(exportDoc());
+  state.copyInfo = await loadCopy();
+  state.localCopy = empty ? state.copyInfo : null;
   // Saved defaults open the charts; a tab clicked this session wins until the tab closes.
   for (const k of PREF_KEYS) if (!(k in sessionUi) && s.prefs?.[k] !== undefined) ui[k] = s.prefs[k];
 }
@@ -211,12 +217,41 @@ async function commit(send) {
   render();
   try {
     await send();
+    queueCopy();
   } catch (err) {
     if (err.message === "Signed out") return;
     alert(`Couldn't save: ${err.message}`);
     await refresh().catch(() => {});
     render();
   }
+}
+
+/** Everything you've logged and chosen, as one file (Export, and this browser's recovery copy). */
+function exportDoc() {
+  return {
+    days: state.demo ? {} : state.raw, goals: state.goals, library: state.demo ? state.serverLibrary : state.library, plan: state.savedPlan,
+    achievements: { tiers: state.achievements?.tiers || {}, ledger: state.demo ? null : state.achievements?.ledger || null },
+    prefs: state.prefs,
+    exportedAt: new Date().toISOString(), format: "ash-health/3 (per-source buckets, food diary, library)",
+  };
+}
+let copyTimer;
+/** After a save, refresh this browser's copy a few seconds later (it skips itself if one is fresh). */
+function queueCopy() {
+  if (state.demo) return;
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(async () => {
+    if (await saveCopy(exportDoc())) state.copyInfo = await loadCopy();
+  }, 4000);
+}
+
+function download(doc, name) {
+  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 /** A first real save replaces the sample days rather than joining them. */
@@ -341,7 +376,8 @@ const ACTS = {
     if (!confirm("Erase every logged day, including Apple Health's? Export first if you want a copy.")) return false;
     state.raw = {};
     state.days = {};
-    commit(() => api.eraseDays());
+    // Erasing is backed up first; reloading shows the way back straight away.
+    commit(() => api.eraseDays()).then(reload);
     return false;
   },
   /* food diary */
@@ -468,17 +504,48 @@ const ACTS = {
   },
   export: () => {
     if (state.demo) { alert("Nothing to export yet — these are sample days."); return false; }
-    const doc = {
-      days: state.raw, goals: state.goals, library: state.library, plan: state.savedPlan,
-      exportedAt: new Date().toISOString(), format: "ash-health/3 (per-source buckets, food diary, library)",
-    };
-    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `ash-health-${keyOf(new Date())}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    download(exportDoc(), `ash-health-${keyOf(new Date())}.json`);
     return false;
+  },
+  /* backups & recovery */
+  "backup-now": async () => {
+    const r = await api.backupNow().catch(failed);
+    if (!r) return;
+    await reload();
+    toast(r.snapshot ? "Backed up" : r.skipped === "empty" ? "Nothing to back up yet" : "Already backed up — nothing changed since the last one");
+  },
+  "backup-every": async (el) => {
+    await api.setBackupEvery(Number(el.dataset.v)).catch(failed);
+    await reload();
+  },
+  "backup-restore": async (el) => {
+    if (!confirm(`Roll back to the backup from ${el.dataset.when}?\n\nYour log, saved foods, meals, rewards and settings go back to how they were then. How things are right now is backed up first, so you can undo this from Settings → Backups.`)) return;
+    const r = await api.restoreBackup(el.dataset.id).catch(failed);
+    if (!r) return;
+    state.localCopy = null;
+    await reload();
+    toast(`Rolled back to ${el.dataset.when}`);
+  },
+  "recover-copy": async () => {
+    const copy = state.localCopy || (await loadCopy());
+    if (!copy?.doc) return;
+    if (!confirm(`Put back this browser's copy from ${new Date(copy.savedAt).toLocaleString()} (${copy.days} days)?`)) return;
+    const r = await api.importAll(copy.doc).catch(failed);
+    if (!r) return;
+    state.localCopy = null;
+    await reload();
+    toast(`Restored ${r.days} days from this browser's copy`);
+  },
+  "copy-download": async () => {
+    const copy = await loadCopy();
+    if (copy?.doc) download(copy.doc, `ash-health-browser-copy-${copy.savedAt.slice(0, 10)}.json`);
+  },
+  "copy-forget": async () => {
+    if (!confirm("Delete the recovery copy kept in this browser? The site's own backups aren't affected.")) return;
+    await forgetCopy();
+    state.copyInfo = null;
+    state.localCopy = null;
+    render();
   },
 };
 

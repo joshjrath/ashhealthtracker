@@ -10,9 +10,12 @@
      items kind + id → data: saved foods ("food"), custom meals ("meal"),
            rewards ("reward"), cached food lookups ("lookup") and AI
            estimates ("estimate")
+     snapshots  backups of all of the above, gzipped (see backup.mjs)
+
+   dump() and restore() read and write everything at once, for backups.
    ────────────────────────────────────────────────────────────────────────── */
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 export async function openStore({ databaseUrl, file }) {
   return databaseUrl ? openPg(databaseUrl) : openFile(file);
@@ -43,6 +46,12 @@ async function openPg(url) {
       data jsonb not null,
       updated_at timestamptz not null default now(),
       primary key (kind, id)
+    );
+    create table if not exists snapshots (
+      id text primary key,
+      created_at timestamptz not null,
+      info jsonb not null,
+      data bytea not null
     );
   `);
 
@@ -147,6 +156,59 @@ async function openPg(url) {
     async ping() {
       await pool.query("select 1");
     },
+
+    /* everything at once, for backups */
+    async dump() {
+      const [d, m, i] = await Promise.all([
+        pool.query("select key, data from days"),
+        pool.query("select k, v from meta"),
+        pool.query("select kind, data from items"),
+      ]);
+      const items = {};
+      for (const r of i.rows) (items[r.kind] ||= []).push(r.data);
+      return {
+        days: Object.fromEntries(d.rows.map((r) => [r.key, r.data])),
+        meta: Object.fromEntries(m.rows.map((r) => [r.k, r.v])),
+        items,
+      };
+    },
+    /** Put back days, the given meta keys and item kinds — all or nothing. */
+    async restore({ days, meta, items }, { metaKeys, itemKinds }) {
+      await tx(async (c) => {
+        await c.query("delete from days");
+        for (const [key, data] of Object.entries(days || {})) {
+          await c.query("insert into days (key, data) values ($1, $2::jsonb)", [key, JSON.stringify(data)]);
+        }
+        await c.query("delete from items where kind = any($1)", [itemKinds]);
+        for (const kind of itemKinds) {
+          for (const data of items?.[kind] || []) {
+            await c.query("insert into items (kind, id, data) values ($1, $2, $3::jsonb)", [kind, data.id, JSON.stringify(data)]);
+          }
+        }
+        for (const k of metaKeys) {
+          if (meta?.[k] === undefined || meta[k] === null) await c.query("delete from meta where k = $1", [k]);
+          else await c.query("insert into meta (k, v) values ($1, $2) on conflict (k) do update set v = excluded.v", [k, JSON.stringify(meta[k])]);
+        }
+      });
+    },
+    async putSnapshot({ data, ...info }) {
+      await pool.query("insert into snapshots (id, created_at, info, data) values ($1, $2, $3::jsonb, $4)",
+        [info.id, info.createdAt, JSON.stringify(info), data]);
+    },
+    async listSnapshots() {
+      const r = await pool.query("select info from snapshots order by created_at desc");
+      return r.rows.map((x) => x.info);
+    },
+    async getSnapshot(id) {
+      const r = await pool.query("select info, data from snapshots where id = $1", [id]);
+      return r.rows[0] ? { ...r.rows[0].info, data: r.rows[0].data } : null;
+    },
+    async deleteSnapshot(id) {
+      await pool.query("delete from snapshots where id = $1", [id]);
+    },
+    async deleteSnapshots(ids) {
+      await pool.query("delete from snapshots where id = any($1)", [ids]);
+    },
     close: () => pool.end(),
   };
 }
@@ -154,6 +216,7 @@ async function openPg(url) {
 /* ── JSON file ─────────────────────────────────────────────────────────── */
 
 async function openFile(file) {
+  const snapDir = `${file}.backups`;
   let doc = { days: {}, meta: {}, items: {} };
   try {
     const parsed = JSON.parse(await readFile(file, "utf8"));
@@ -161,10 +224,11 @@ async function openFile(file) {
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  // Writes queue behind each other so two saves can't interleave.
+  // Writes queue behind each other so two saves can't interleave; one
+  // failed write doesn't stop the ones after it.
   let chain = Promise.resolve();
   const flush = () => {
-    chain = chain.then(async () => {
+    chain = chain.catch(() => {}).then(async () => {
       await mkdir(dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
       await writeFile(tmp, JSON.stringify(doc));
@@ -202,6 +266,59 @@ async function openFile(file) {
     async getMeta(k) { return doc.meta[k] === undefined ? null : structuredClone(doc.meta[k]); },
     async setMeta(k, v) { doc.meta[k] = v; await flush(); },
     async ping() {},
+
+    /* everything at once, for backups */
+    async dump() {
+      const items = {};
+      for (const [kind, byId] of Object.entries(doc.items)) items[kind] = Object.values(byId);
+      return structuredClone({ days: doc.days, meta: doc.meta, items });
+    },
+    async restore({ days, meta, items }, { metaKeys, itemKinds }) {
+      const next = structuredClone({ days: days || {}, meta: meta || {}, items: items || {} });
+      doc.days = next.days;
+      for (const kind of itemKinds) doc.items[kind] = Object.fromEntries((next.items[kind] || []).map((x) => [x.id, x]));
+      for (const k of metaKeys) {
+        if (next.meta[k] === undefined || next.meta[k] === null) delete doc.meta[k];
+        else doc.meta[k] = next.meta[k];
+      }
+      await flush();
+    },
+    // Snapshots sit beside the data file: an index plus one gzip file each.
+    async putSnapshot({ data, ...info }) {
+      await mkdir(snapDir, { recursive: true });
+      await writeFile(join(snapDir, `${info.id}.json.gz`), data);
+      const index = await readIndex();
+      index.unshift(info);
+      await writeIndex(index);
+    },
+    async listSnapshots() {
+      return (await readIndex()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async getSnapshot(id) {
+      const info = (await readIndex()).find((x) => x.id === id);
+      if (!info) return null;
+      return { ...info, data: await readFile(join(snapDir, `${id}.json.gz`)) };
+    },
+    async deleteSnapshot(id) { await this.deleteSnapshots([id]); },
+    async deleteSnapshots(ids) {
+      const drop = new Set(ids);
+      await writeIndex((await readIndex()).filter((x) => !drop.has(x.id)));
+      for (const id of ids) await rm(join(snapDir, `${id}.json.gz`), { force: true });
+    },
     close: async () => { await chain; },
   };
+
+  async function readIndex() {
+    try {
+      return JSON.parse(await readFile(join(snapDir, "index.json"), "utf8"));
+    } catch (e) {
+      if (e.code === "ENOENT") return [];
+      throw e;
+    }
+  }
+  async function writeIndex(index) {
+    const tmp = join(snapDir, "index.json.tmp");
+    await writeFile(tmp, JSON.stringify(index));
+    await rename(tmp, join(snapDir, "index.json"));
+  }
 }
