@@ -7,6 +7,7 @@
 import { addDays, mondayOf, range, fmtInt } from "./metrics.js";
 import { WEEKDAYS, WEEKDAY_LABELS, PLAN_LABELS, weekStatus, liftHistory, dayVolume, knownExercises } from "./training.js";
 import { esc, tip } from "./charts.js";
+import { cleanLift } from "./sources.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -69,14 +70,70 @@ export function strengthCard(ctx) {
 
 /* ── the log form ──────────────────────────────────────────────────────── */
 
+/*
+   The form isn't tied to the day you opened it on. `draft.from` is the day
+   its lifts were loaded from; `draft.key` is the day they'll be saved on.
+   Pick another day before typing and the form shows that day instead;
+   pick one after typing (or with a saved session open) and what's in the
+   form goes along — added to what that day already has, and taken off the
+   day it came from. So a session can be logged, or moved, on any past day.
+*/
+
+const savedLifts = (raw, k) => raw[k]?.manual?.lifts || [];
+const cleanAll = (lifts) => lifts.map((l) => cleanLift({ ...l, exercise: String(l.exercise ?? "").trim() })).filter(Boolean);
+
+/** Anything typed into the form at all — an empty form can switch days freely. */
+export function liftTyped(draft) {
+  return draft.lifts.some((l) => String(l.exercise ?? "").trim() || l.sets.some((s) => String(s.reps ?? "").trim() || String(s.weight ?? "").trim()));
+}
+
+/** The form differs from what's saved on the day it came from (so leaving it would lose something). */
+export function liftDirty(raw, draft) {
+  const plain = (lifts) => JSON.stringify(cleanAll(lifts).map(({ id, ...l }) => l));
+  return plain(draft.lifts) !== plain(savedLifts(raw, draft.from));
+}
+
+/**
+ * What saving writes, as [{ key, lifts }] — the day saved on first, so a
+ * failed save never leaves a session on neither day.
+ */
+export function liftWrites(raw, draft, lifts) {
+  const { key, from } = draft;
+  if (key === from) return [{ key, lifts }];
+  const ids = new Set(lifts.map((l) => l.id));
+  const writes = [{ key, lifts: [...savedLifts(raw, key).filter((l) => !ids.has(l.id)), ...lifts] }];
+  if (savedLifts(raw, from).length) writes.push({ key: from, lifts: [] });
+  return writes;
+}
+
 export function liftForm(ctx, draft) {
   const known = knownExercises(ctx.days).slice(0, 60);
+  const { today } = ctx;
+  const yesterday = addDays(today, -1);
+  const rel = (k) => (k === today ? "Today · " : k === yesterday ? "Yesterday · " : "");
+  const moved = draft.key !== draft.from;
+  const leaving = moved ? savedLifts(ctx.raw, draft.from) : [];
+  const there = moved ? savedLifts(ctx.raw, draft.key) : [];
+  const day = dayText(draft.key);
+  const notes = [];
+  if (leaving.length) {
+    notes.push(`Saving moves this session from <b>${esc(dayText(draft.from))}</b> to <b>${esc(day)}</b>.
+      <button type="button" class="linkbtn" data-act="lift-keep">Keep it on ${esc(dayText(draft.from))}</button>`);
+  }
+  if (there.length) {
+    notes.push(`${esc(day)} already has ${there.map((l) => `<b>${esc(l.exercise)}</b>`).join(", ")} logged — what's below is added to ${there.length === 1 ? "it" : "them"}.
+      <button type="button" class="linkbtn" data-act="lift-view">Edit ${esc(day)}'s lifts instead</button>`);
+  }
+  if (!moved && draft.key === today && draft.lateNight && !savedLifts(ctx.raw, today).length) {
+    notes.push(`Just past midnight — logging last night's session?
+      <button type="button" class="linkbtn" data-act="lift-day" data-v="-1">Put it on ${esc(dayText(yesterday))}</button>`);
+  }
   const ex = draft.lifts.map((l, i) => `<div class="lx">
-      <div class="lx-h"><span class="inp"><input name="ex-${i}" list="exlist" value="${esc(l.exercise)}" placeholder="Exercise, e.g. Bench press" maxlength="80" aria-label="Exercise ${i + 1}"></span>
+      <div class="lx-h"><span class="inp"><input name="ex-${i}" list="exlist" value="${esc(l.exercise)}" placeholder="Exercise, e.g. Bench press" maxlength="80" aria-label="Exercise ${i + 1}"${i === 0 ? " data-focus" : ""}></span>
         <button type="button" class="ib" data-act="lift-del-ex" data-i="${i}" title="Remove exercise" aria-label="Remove exercise">×</button></div>
       <div class="lsets">${l.sets.map((s, j) => `<div class="lset">
           <span class="sn">${j + 1}</span>
-          <span class="inp"><input name="r-${i}-${j}" type="number" min="1" max="1000" step="1" inputmode="numeric" value="${esc(s.reps ?? "")}" aria-label="Reps"><em>reps</em></span>
+          <span class="inp"><input name="r-${i}-${j}" type="number" min="1" max="1000" step="1" inputmode="numeric" value="${esc(s.reps ?? "")}" placeholder="reps" aria-label="Reps"><em>reps</em></span>
           <span class="times">×</span>
           <span class="inp"><input name="w-${i}-${j}" type="number" min="0" max="3000" step="0.5" inputmode="decimal" value="${esc(s.weight ?? "")}" placeholder="weight" aria-label="Weight"></span>
           <select name="u-${i}-${j}" aria-label="Unit"><option value="lb"${s.unit !== "kg" ? " selected" : ""}>lb</option><option value="kg"${s.unit === "kg" ? " selected" : ""}>kg</option></select>
@@ -86,17 +143,25 @@ export function liftForm(ctx, draft) {
     </div>`).join("");
   return `<form data-form="lifts" data-key="${draft.key}">
     <header>
-      <div><div class="eyebrow">${esc(dayText(draft.key))}</div><h2>Log lifts</h2></div>
+      <div><div class="eyebrow">${esc(rel(draft.key) + day)}</div><h2>Log lifts</h2></div>
       <button type="button" class="x" data-close aria-label="Close">×</button>
     </header>
+    <div class="liftday" role="group" aria-label="Day of this session">
+      <span class="ld-l">Day</span>
+      <button type="button" class="nav" data-act="lift-day" data-v="-1" aria-label="Previous day">‹</button>
+      <span class="inp"><input type="date" name="day" value="${draft.key}" max="${today}" required aria-label="Day of this session"></span>
+      <button type="button" class="nav" data-act="lift-day" data-v="1" aria-label="Next day"${draft.key >= today ? " disabled" : ""}>›</button>
+      ${draft.key !== today ? `<button type="button" class="nav" data-act="lift-day" data-v="0">Today</button>` : ""}
+    </div>
+    ${notes.map((n) => `<p class="liftnote">${n}</p>`).join("")}
     <p class="hint">Weight is per set as lifted (for dumbbells, one dumbbell). Bodyweight moves can leave weight at 0.</p>
     <div class="lxs">${ex || `<div class="empty-row">No exercises yet.</div>`}</div>
     <button type="button" class="btn" data-act="lift-add-ex">+ Add exercise</button>
     <datalist id="exlist">${known.map((k) => `<option value="${esc(k)}"></option>`).join("")}</datalist>
     <footer>
-      ${(ctx.raw[draft.key]?.manual?.lifts || []).length ? `<button type="button" class="btn danger ghost" data-act="lift-clear">Clear this day's lifts</button>` : ""}
+      ${!moved && savedLifts(ctx.raw, draft.key).length ? `<button type="button" class="btn danger ghost" data-act="lift-clear">Clear this day's lifts</button>` : ""}
       <button type="button" class="btn" data-close>Cancel</button>
-      <button type="submit" class="btn primary">Save lifts</button>
+      <button type="submit" class="btn primary">${leaving.length ? `Move to ${esc(dayText(draft.key))}` : "Save lifts"}</button>
     </footer>
   </form>`;
 }

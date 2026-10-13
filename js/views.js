@@ -912,7 +912,7 @@ export function dayDetails(ctx, key) {
       ${line("Weight", val(d?.weight != null ? fmt1(d.weight) : null, "lb"), "weight")}
       ${line("Creatine", d?.creatine == null ? `<span class="muted">No data</span>` : `<b>${d.creatine ? "Taken" : "Skipped"}</b>`, "creatine")}
     </div>
-    <footer><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" data-act="food-open" data-key="${key}">Food diary</button><button type="button" class="btn primary" data-act="log" data-key="${key}">Edit log</button></footer>`;
+    <footer><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" data-act="food-open" data-key="${key}">Food diary</button>${key <= ctx.today ? `<button type="button" class="btn" data-act="lifts-open" data-key="${key}">${d?.lifts?.length ? "Edit lifts" : "Log lifts"}</button>` : ""}<button type="button" class="btn primary" data-act="log" data-key="${key}">Edit log</button></footer>`;
 }
 
 /* ── settings ──────────────────────────────────────────────────────────── */

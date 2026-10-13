@@ -13,7 +13,7 @@ import { esc } from "./charts.js";
 import { resolveDay, cleanLift } from "./sources.js";
 import { evaluate, buildCatalog, unseenUnlocks, DEFAULT_CATALOG } from "./achievements.js";
 import { badgeDetail, nextPanel, rewardForm, celebration } from "./trophies.js";
-import { liftForm } from "./strength.js";
+import { liftForm, liftTyped, liftDirty, liftWrites } from "./strength.js";
 import { cleanPlan, WEEKDAYS } from "./training.js";
 import { cleanMeal, cleanReward, cleanFood, newId } from "./library.js";
 import { dayLabel } from "./diary.js";
@@ -465,6 +465,19 @@ const ACTS = {
   },
   "lift-del-set": (el) => { syncLifts(); liftDraft.lifts[Number(el.dataset.i)].sets.splice(Number(el.dataset.j), 1); refreshPanel(); return false; },
   "lift-del-ex": (el) => { syncLifts(); liftDraft.lifts.splice(Number(el.dataset.i), 1); refreshPanel(); return false; },
+  "lift-day": (el) => {
+    syncLifts();
+    const v = Number(el.dataset.v);
+    liftDay(v === 0 ? keyOf(new Date()) : addDays(liftDraft.key, v));
+    return false;
+  },
+  "lift-keep": () => { syncLifts(); liftDraft.key = liftDraft.from; refreshPanel(); return false; },
+  "lift-view": () => {
+    syncLifts();
+    if (liftDirty(state.raw, liftDraft) && !confirm(`Drop what's in the form and open ${fmtDay(liftDraft.key)}'s lifts?`)) return false;
+    openLifts(liftDraft.key);
+    return false;
+  },
   "lift-clear": () => {
     if (!confirm(`Clear every lift logged on ${fmtDay(liftDraft.key)}?`)) return false;
     saveLifts([]);
@@ -856,7 +869,7 @@ function openPanel(p) {
   panelBody.innerHTML = panelHtml();
   paneldlg.classList.toggle("wide", p.kind === "lifts" || p.kind === "next");
   if (!paneldlg.open) paneldlg.showModal();
-  const first = panelBody.querySelector("input:not([type=hidden]), select");
+  const first = panelBody.querySelector("[data-focus]") || panelBody.querySelector("input:not([type=hidden]), select");
   if (first && matchMedia("(pointer: fine)").matches && p.kind !== "badge") first.focus();
 }
 /** Redraw the open panel (its data changed), keeping the scroll position. */
@@ -885,12 +898,32 @@ paneldlg.addEventListener("submit", (e) => {
 
 /* ── lifting ───────────────────────────────────────────────────────────── */
 
-let liftDraft = null;
+let liftDraft = null; // { key: the day it saves on, from: the day its lifts came from, lifts, lateNight }
 const lastUnit = () => liftDraft?.lifts.flatMap((l) => l.sets).map((x) => x.unit).filter(Boolean).pop() || "lb";
 function openLifts(key) {
+  const today = keyOf(new Date());
+  if (key > today) key = today;
   const saved = state.raw[key]?.manual?.lifts || [];
-  liftDraft = { key, lifts: saved.length ? structuredClone(saved) : [{ exercise: "", sets: [{ reps: "", weight: "", unit: "lb" }] }] };
+  liftDraft = {
+    key, from: key,
+    lifts: saved.length ? structuredClone(saved) : [{ exercise: "", sets: [{ reps: "", weight: "", unit: lastUnit() }] }],
+    lateNight: new Date().getHours() < 5,
+  };
+  if (daydlg.open) daydlg.close();
   openPanel({ kind: "lifts" });
+}
+/**
+ * Point the form at another day. An empty form just shows that day; one
+ * with lifts in it carries them there (see strength.js).
+ */
+function liftDay(next) {
+  const today = keyOf(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next || "")) return refreshPanel();
+  if (next > today) next = today;
+  if (next === liftDraft.key) return refreshPanel();
+  if (!liftTyped(liftDraft)) return openLifts(next);
+  liftDraft.key = next;
+  refreshPanel();
 }
 /** Read what's typed into the draft before the form redraws. */
 function syncLifts() {
@@ -905,25 +938,54 @@ function syncLifts() {
     });
   });
 }
+// The day field: a date picked from the calendar applies at once; one being
+// typed applies on Enter or when you leave the field, so the form doesn't
+// redraw under your keystrokes.
+let dayTypedAt = 0;
+paneldlg.addEventListener("keydown", (e) => {
+  if (e.target.name !== "day" || !liftDraft) return;
+  dayTypedAt = Date.now();
+  if (e.key === "Enter") { e.preventDefault(); syncLifts(); liftDay(e.target.value); }
+});
+paneldlg.addEventListener("change", (e) => {
+  if (e.target.name !== "day" || !liftDraft || Date.now() - dayTypedAt < 400) return;
+  syncLifts();
+  liftDay(e.target.value);
+});
+paneldlg.addEventListener("focusout", (e) => {
+  if (e.target.name !== "day" || !liftDraft || !e.target.isConnected || e.target.value === liftDraft.key) return;
+  syncLifts();
+  liftDay(e.target.value);
+});
 function focusLast(sel) {
   const list = panelBody.querySelectorAll(sel);
   list[list.length - 1]?.focus();
 }
 function saveLifts(lifts) {
-  const key = liftDraft.key;
-  leaveDemo();
-  const manual = { ...(state.raw[key]?.manual || {}) };
-  if (lifts.length) manual.lifts = lifts; else delete manual.lifts;
-  setDay(key, manual);
+  leaveDemo(); // first, so sample days never get mixed into yours
+  const writes = liftWrites(state.raw, liftDraft, lifts);
+  const { key } = liftDraft;
+  for (const w of writes) {
+    const manual = { ...(state.raw[w.key]?.manual || {}) };
+    if (w.lifts.length) manual.lifts = w.lifts; else delete manual.lifts;
+    setDay(w.key, manual);
+  }
   closePanel();
-  commit(() => api.patchDay(key, { lifts }));
+  if (writes.length > 1) toast(`Moved to ${fmtDay(key)}`);
+  else if (key !== keyOf(new Date()) && lifts.length) toast(`Saved on ${fmtDay(key)}`);
+  commit(async () => {
+    for (const w of writes) await api.patchDay(w.key, { lifts: w.lifts });
+  });
 }
 
 /* ── settings forms ────────────────────────────────────────────────────── */
 
 const FORMS = {
-  lifts() {
+  lifts(f) {
     syncLifts();
+    // A day typed into the field but not yet applied: show it first, save on the next press.
+    const typedDay = f.elements.day?.value;
+    if (typedDay && typedDay !== liftDraft.key) return liftDay(typedDay);
     const lifts = liftDraft.lifts.map((l) => cleanLift({ ...l, exercise: l.exercise.trim() })).filter(Boolean);
     const typed = liftDraft.lifts.filter((l) => l.exercise.trim() || l.sets.some((x) => x.reps)).length;
     if (typed > lifts.length && !confirm("Some exercises are missing a name or reps and won't be saved. Save the rest?")) return;

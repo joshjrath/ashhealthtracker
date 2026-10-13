@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { openStore } from "../server/db.mjs";
 import { createApp } from "../server/app.mjs";
 import { resolveDay } from "../js/sources.js";
+import { liftWrites } from "../js/strength.js";
 import { USDA_CHOBANI } from "./fixtures.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -102,6 +103,23 @@ test("saving the log dialog keeps the diary and lifts; PATCH changes only what's
   // PATCH needs JSON, like every other write
   const res = await fetch(`${base}/api/days/2026-09-28`, { method: "PATCH", body: "foodDone=false", headers: { "content-type": "application/x-www-form-urlencoded" } });
   assert.equal(res.status, 415);
+});
+
+test("lifts can be logged on any past day, and a session moved to the day it belongs to", async () => {
+  // logged long after the fact
+  await call("PATCH", "/api/days/2026-08-03", { lifts: [{ id: "l_dl", exercise: "Deadlift", sets: [{ reps: 5, weight: 275 }] }] });
+  // saved after midnight on the wrong day, next to other things logged that day
+  await call("PATCH", "/api/days/2026-08-05", { creatine: true, lifts: [{ id: "l_ohp", exercise: "Overhead press", sets: [{ reps: 6, weight: 95 }] }] });
+  await call("PATCH", "/api/days/2026-08-04", { lifts: [{ id: "l_row", exercise: "Row", sets: [{ reps: 10, weight: 115 }] }] });
+  let days = (await call("GET", "/api/state")).body.days;
+  assert.equal(days["2026-08-03"].manual.lifts[0].exercise, "Deadlift");
+  // what the form sends when the session is moved back to the 4th
+  const moving = days["2026-08-05"].manual.lifts;
+  for (const w of liftWrites(days, { key: "2026-08-04", from: "2026-08-05" }, moving)) await call("PATCH", `/api/days/${w.key}`, { lifts: w.lifts });
+  days = (await call("GET", "/api/state")).body.days;
+  assert.deepEqual(days["2026-08-04"].manual.lifts.map((l) => l.exercise), ["Row", "Overhead press"], "added to what the 4th had");
+  assert.equal(days["2026-08-05"].manual.lifts, undefined, "taken off the 5th");
+  assert.equal(days["2026-08-05"].manual.creatine, true, "the rest of the 5th stays");
 });
 
 test("Apple Health can't write food, lifts or calories eaten, even through the diary fields", async () => {

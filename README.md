@@ -38,7 +38,7 @@ Every stored day keeps each source in its own bucket, `{ manual, apple, legacy }
 
 Apple Health can't reach a manual-only metric: `/api/ingest` drops food and sleep before anything is stored, and the Apple bucket only accepts the fields above. Days saved before this existed were moved to `legacy` and their food and sleep are left out of every number until you sort them in **Settings → Review older entries**.
 
-Food is itemised in the diary (`manual.foods`, each entry with its numbers frozen at the amount you logged and where they came from). Older days keep their typed totals as a "quick add"; a day's food is the two added together. Lifts live in `manual.lifts`. Neither can arrive from Apple Health.
+Food is itemised in the diary (`manual.foods`, each entry with its numbers frozen at the amount you logged and where they came from). Older days keep their typed totals as a "quick add"; a day's food is the two added together. Lifts live in `manual.lifts`, on whichever day you pick in the lift log — any past day, so a session logged after midnight (or on the wrong day) can be put back where it belongs. Neither can arrive from Apple Health.
 
 **Missing is never zero.** Each goal is *hit*, *missed*, *no data* or (today) *in progress*. A hit is final as soon as it happens. A miss needs proof: a finished day, a complete food log, or a value that can't come back into range. Averages skip days without data and need at least 3 real observations. Adherence needs 10 judged goal-days. A goal date needs 14 weigh-ins over 3+ weeks and a real downward trend. Otherwise the page says "Not enough data yet".
 
@@ -119,7 +119,7 @@ js/views.js       one function per panel, and the pages built from them
 js/diary.js       the Nutrition page's food panels
 js/foodsheet.js   the add-food sheet: search, suggestions, editing, custom foods, meals
 js/trophies.js    Next unlock, trophy room, badge details, rewards, the unlock moment
-js/strength.js    the Strength card and the lift log
+js/strength.js    the Strength card and the lift log (any day; moving a session)
 js/recovery.js    this browser's recovery copy of your log
 js/app.js         routing, measured chart mounting, tooltip, dialogs, settings
 test/             node --test suites. On Postgres, one file at a time (they share the database):

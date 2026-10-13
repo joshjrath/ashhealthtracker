@@ -757,7 +757,7 @@ dialog footer .danger { margin-right: auto; }
 .srcTag.manual { background: rgba(243,233,108,.13); color: #EDE38A; }
 .srcTag.apple { background: rgba(92,200,240,.13); color: #9FDDF4; }
 .srcTag.legacy { background: rgba(238,154,85,.13); color: #F4C9A4; }
-#daydlg footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+#daydlg footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
 dialog .dlg-h { font-family: var(--ui); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink3); margin: 16px 0 8px; }
 dialog .dlg-h span { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--dim); margin-left: 6px; }
 dialog .chk.food { background: rgba(243,233,108,.08); }
@@ -1254,6 +1254,15 @@ button.fh:hover { background: #26262C; }
 .lx > .linkbtn { align-self: flex-start; margin-left: 28px; }
 .lset select { border: 0; border-radius: 10px; background: #1C1C21; color: var(--ink); font: 600 13px var(--ui); padding: 9px 8px; color-scheme: dark; }
 .lset .ib { width: 32px; height: 32px; }
+.lset .inp:has(em) input::placeholder { color: transparent; }
+.liftday { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.liftday .ld-l { font-size: 12px; font-weight: 600; color: var(--ink3); margin-right: 4px; }
+.liftday .inp { display: flex; align-items: center; background: #1C1C21; border-radius: 10px; padding: 0 10px; border: 1px solid transparent; }
+.liftday .inp:focus-within { border-color: var(--salmon); }
+.liftday input { border: 0; background: none; color: var(--ink); font: 600 14px var(--ui); padding: 8px 0; outline: 0; color-scheme: dark; min-width: 0; }
+.liftnote { margin: 0 0 10px; padding: 10px 12px; border-radius: 12px; background: var(--sunk); color: var(--ink2); font-size: 13px; line-height: 1.45; }
+.liftnote b { color: var(--ink); }
+.liftnote .linkbtn { margin-left: 2px; font-size: 13px; }
 
 /* ── settings additions ──────────────────────────────────────────────── */
 .provs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
@@ -1359,6 +1368,10 @@ button.fh:hover { background: #26262C; }
   .amount { grid-template-columns: 110px minmax(0, 1fr); }
   .amount .grams { grid-column: 1 / -1; padding: 0; }
   .lset { grid-template-columns: 18px minmax(0, 1fr) 10px minmax(0, 1fr) 58px 30px; }
+  /* no room for the "reps" label beside the number: it moves into the empty box */
+  .lset .inp { padding: 0 8px; }
+  .lset .inp em { display: none; }
+  .lset .inp:has(em) input::placeholder { color: var(--dim); }
   #fooddlg { width: 100vw; max-width: 100vw; max-height: 92vh; margin: auto 0 0; border-radius: var(--r) var(--r) 0 0; }
   .fsbody { padding: 18px 16px 22px; }
 }
