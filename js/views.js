@@ -24,6 +24,7 @@ import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, lib
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
 import { strengthCard, setsText } from "./strength.js";
 import { DEFAULT_SUPPLEMENTS, currentSupps, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
+import { sheetScript } from "./sheetscript.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -996,7 +997,7 @@ function overview(ctx) {
     ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
-    ["backups", !st.backups ? "" : !st.backups.persistent ? "⚠ Erased on every update" : st.backups.everyHours ? `Every ${st.backups.everyHours}h${st.backups.lastAt ? ` · last ${ago(new Date(st.backups.lastAt))}` : ""}` : "Automatic backups off"],
+    ["backups", !st.backups ? "" : !st.backups.persistent ? "⚠ Erased on every update" : [st.backups.everyHours ? `Every ${st.backups.everyHours}h` : "Automatic backups off", st.backupLinks?.length ? (st.backupLinks.some((l) => l.lastUsedAt) ? `Sheet ${ago(new Date(st.backupLinks.map((l) => l.lastUsedAt).filter(Boolean).sort().at(-1)))}` : "Sheet waiting") : "No sheet copy"].join(" · ")],
     ["data", `${n} day${n === 1 ? "" : "s"} stored`],
   ];
   return `<nav class="card overview" aria-label="Settings sections">${rows.map(([id, value]) =>
@@ -1332,7 +1333,7 @@ function backupsSection(ctx) {
       <ol class="fixsteps">
         <li><b>Download your data now:</b> <button type="button" class="btn" data-act="export">Export</button></li>
         <li>In Railway, open this project and choose <b>+ New → Database → Add PostgreSQL</b>.</li>
-        <li>Open the web service → <b>Variables → New variable</b>: name <code>DATABASE_URL</code>, value <code>\${{Postgres.DATABASE_URL}}</code>. Railway redeploys the site.</li>
+        <li>Open the web service → <b>Variables → New variable</b>: name <code>DATABASE_URL</code>, value <code>\${{Postgres.DATABASE_URL}}</code>, then press <b>Deploy</b>. If the variable shows <i>&lt;empty string&gt;</i>, paste the address instead: Postgres → <b>Connect</b> → Private network → copy the <b>Connection URL</b>.</li>
         <li>Back here, <b>Settings → Your data → Import</b> the file from step 1. This box turns green, and updates never touch your data again.</li>
       </ol>`;
   const sched = `<div class="tabs" role="radiogroup">${st.choices.map((h) => `<button type="button" role="radio" class="tab${h === st.everyHours ? " on" : ""}" aria-checked="${h === st.everyHours}"
@@ -1359,8 +1360,55 @@ function backupsSection(ctx) {
     <div class="bklist">${rows || `<div class="empty-row">None yet.</div>`}</div>
     ${row("This browser's copy", copy ? `A recovery copy of your log is also kept in this browser (saved ${esc(whenText(copy.savedAt))} · ${copy.days} days), in case the server's storage is ever lost.` : "Each browser you use keeps a recovery copy of your log, refreshed as you use the site.",
       copy ? `<div class="actions"><button type="button" class="btn" data-act="copy-download">Download</button><button type="button" class="btn danger ghost" data-act="copy-forget">Forget</button></div>` : "")}
+    ${sheetBackup(ctx)}
     <p class="hint small">Kept: everything from the last 2 days, the newest of each day for 30 days, then one a week for 6 months, plus up to 30 you make yourself. Backups hold your days, food diary, lifts, saved foods, meals, rewards, goals, training plan and achievement settings — not your password, upload tokens or lookup keys, so a rollback can never lock you out. To roll back the site's <i>code</i>, use Railway → Deployments → Redeploy on an earlier deployment; that never touches your data.</p>
   </section>`;
+}
+
+/**
+ * The Google Sheet: a copy kept at Google, refreshed every night, readable
+ * on its own, and able to put everything back. Lives off this server, so it
+ * survives anything that happens here.
+ */
+function sheetBackup(ctx) {
+  const links = ctx.settings?.backupLinks || [];
+  const DAY = 86400_000;
+  const shown = links.find((l) => ctx.revealed[`bl:${l.id}`]);
+  const script = shown ? sheetScript({ site: location.origin, link: ctx.revealed[`bl:${shown.id}`] }) : "";
+  const rows = links.map((l) => {
+    const stale = l.lastUsedAt && Date.now() - Date.parse(l.lastUsedAt) > 2 * DAY;
+    const when = l.lastUsedAt ? `Last copied ${ago(new Date(l.lastUsedAt))}` : "Waiting for the sheet's first copy";
+    return `<div class="tok${stale ? " stale" : ""}">
+      <div class="tk-main"><b>${esc(l.name)}</b><span>${esc(when)}${stale ? " — it should copy every night; open the sheet and check its About tab" : ""} · created ${esc(fmtDay(l.createdAt.slice(0, 10), true))}</span></div>
+      <div class="tk-acts">
+        <button type="button" class="btn" data-act="sheet-script" data-v="${esc(l.id)}">${shown?.id === l.id ? "Hide script" : "Show script"}</button>
+        ${iconBtn("sheet-delete", l.id, "trash", "Stop this sheet's copies")}
+      </div>
+    </div>`;
+  }).join("");
+  return `<h3>Google Sheet copy</h3>
+    <p class="hint">A copy of everything in a Google Sheet you own, refreshed every night. Read it any time: every day, every diary entry, every lift, your foods and settings. If anything ever happens to this site, the sheet's <b>Ash Health → Restore</b> menu puts it all back.</p>
+    ${links.length ? `<div class="toks">${rows}</div>` : `<div class="actions"><button type="button" class="btn primary" data-act="sheet-setup">Set up the Google Sheet copy</button></div>`}
+    ${script ? `<div class="sheetsetup">
+      <ol class="fixsteps">
+        <li>On your computer, open <a href="https://sheets.new" target="_blank" rel="noopener noreferrer">sheets.new</a> to make a blank Google Sheet. Name it <b>Ash Health backup</b>.</li>
+        <li>In the sheet, choose <b>Extensions → Apps Script</b>.</li>
+        <li>Delete what's in the editor, then paste the script below (<b>Copy script</b>) and press <b>Save</b> (the disk icon).</li>
+        <li>In the toolbar, pick <b>setup</b> from the function list and press <b>Run</b>. Google asks for permission: <b>Review permissions</b> → your account → <b>Advanced</b> → <b>Go to … (unsafe)</b> → <b>Allow</b>. It says "unsafe" only because Google hasn't reviewed your own script.</li>
+        <li>Go back to the sheet. Within a minute it fills in: <b>About</b>, <b>Days</b>, <b>Food diary</b>, <b>Lifts</b>, <b>Workouts</b>, <b>My foods</b>, <b>Meals</b>, <b>Settings</b>. Reload it to see the <b>Ash Health</b> menu.</li>
+      </ol>
+      <div class="actions"><button type="button" class="btn primary" data-act="sheet-copy" data-v="${esc(shown.id)}">Copy script</button><span class="hint small">The script holds a private link that can read your log — only share the sheet with people you'd trust with it.</span></div>
+      <textarea class="scriptbox" readonly rows="8" aria-label="Google Sheet script">${esc(script)}</textarea>
+    </div>` : ""}
+    <details class="howto"><summary>Restoring from the sheet</summary>
+      <ol>
+        <li>Open the sheet and choose <b>Ash Health → Restore a backup to the website…</b></li>
+        <li>Press OK for the newest backup, or type one of the last 7 days listed.</li>
+        <li>Type the password you sign in to this site with. Everything comes back: days, food diary, lifts, saved foods, meals, rewards, goals, supplements, training plan and achievement settings.</li>
+        <li>The site backs up what it has first, so a restore can itself be undone here.</li>
+      </ol>
+      <p class="hint small">Works even on a brand-new site after everything was lost: the password is the key, and the sheet's nightly copies pick up again on their own. If the site's address ever changes, change <code>SITE</code> at the top of the script.</p>
+    </details>`;
 }
 
 function dataSection(ctx) {

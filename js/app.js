@@ -343,6 +343,31 @@ const ACTS = {
     else revealed[id] = (await api.revealToken(id).catch(failed))?.token;
     render();
   },
+  /* Google Sheet copy */
+  "sheet-setup": async () => {
+    const r = await api.createBackupLink("Google Sheet").catch(failed);
+    if (!r) return;
+    revealed[`bl:${r.id}`] = r.token;
+    await reload();
+    document.querySelector(".sheetsetup")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  },
+  "sheet-script": async (el) => {
+    const key = `bl:${el.dataset.v}`;
+    if (revealed[key]) delete revealed[key];
+    else revealed[key] = (await api.revealBackupLink(el.dataset.v).catch(failed))?.token;
+    render();
+  },
+  "sheet-copy": (el) => {
+    const box = document.querySelector(".scriptbox");
+    if (box) copy(box.value, el);
+    return false;
+  },
+  "sheet-delete": async (el) => {
+    if (!confirm("Stop this sheet's nightly copies? The sheet keeps what it already has, but it won't be able to fetch anything new.")) return;
+    await api.deleteBackupLink(el.dataset.v).catch(failed);
+    delete revealed[`bl:${el.dataset.v}`];
+    await reload();
+  },
   "token-copy": async (el) => {
     const id = el.dataset.v;
     const token = revealed[id] || (await api.revealToken(id).catch(failed))?.token;

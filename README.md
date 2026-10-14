@@ -74,6 +74,12 @@ Backups hold your days, diary, lifts, saved foods, meals, rewards, goals, plan a
 
 Each browser you use also keeps a recovery copy of your log. If the site ever comes back empty, every page offers to put back the server's latest backup or that copy.
 
+### A copy in Google Sheets
+
+Those backups live in the same database as your log, so for a copy that survives anything happening to the server, **Settings → Backups & rollback → Set up the Google Sheet copy** gives you a script to paste into a Google Sheet's Extensions → Apps Script (steps are on the page). Every night around 3am the sheet fetches your log through a read-only backup link and fills in readable tabs — **Days, Food diary, Lifts, Workouts, My foods, Meals, Settings** — plus the full backup of each of the last 7 days in hidden tabs. A failed night changes nothing, and the site never sends an empty log, so a good copy is never replaced by nothing. The site shows when the sheet last copied, and warns if it's been more than two days.
+
+To put everything back: in the sheet, **Ash Health → Restore a backup to the website…**, pick the day, type the site's password. It works even on a brand-new, empty site (the password is the key, and the sheet's link is re-registered so its nightly copies carry on), and the site backs up what it has first, so a restore can be undone.
+
 `npm test` includes a check that restarting the server on the same storage — which is what an update does — leaves every day, food, meal, reward and setting exactly as it was.
 
 ## Deploy to Railway
@@ -104,6 +110,7 @@ server/food.mjs   food lookup: USDA, FatSecret, Open Food Facts → ranked candi
 server/ai.mjs     AI nutrition estimates (Claude), labelled as estimates
 server/storage.mjs where the log lives, and whether it survives an update
 server/backup.mjs  automatic backups, rollback, retention
+server/sheet.mjs   your log as readable tables for the Google Sheet copy
 server/db.mjs     Postgres storage (days, meta, items, snapshots), or a JSON file without a DATABASE_URL
 server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit
 index.html        shell: rail, log dialog, food sheet, panel dialog, tooltip
@@ -124,6 +131,7 @@ js/trophies.js    Next unlock, trophy room, badge details, rewards, the unlock m
 js/strength.js    the Strength card and the lift log (any day; moving or repeating a session)
 js/supplements.js the supplement list, daily check-offs and the Supplements goal
 js/recovery.js    this browser's recovery copy of your log
+js/sheetscript.js the Google Sheet's Apps Script (nightly copy, restore menu)
 js/app.js         routing, measured chart mounting, tooltip, dialogs, settings
 test/             node --test suites. On Postgres, one file at a time (they share the database):
                   TEST_DATABASE_URL=postgres://… node --test --test-concurrency=1 test/*.test.js

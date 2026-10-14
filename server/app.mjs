@@ -6,6 +6,8 @@
      GET  /login  POST /login         public   the password page
      POST /logout
      POST /api/ingest                 token    Apple Health → merged into days
+     GET  /api/backup.json            link     today's full backup; ?sheet=1 adds readable tables (Google Sheet)
+     POST /api/restore                password the Google Sheet's Restore: { password, backup, link } — replaces the log
      GET  /api/state                  session  everything the page draws
      PUT  /api/days/:key              session  save what you logged (the day's manual bucket);
                                                food entries and lifts are kept unless sent
@@ -33,6 +35,9 @@
      PUT  /api/backups/settings       session  { everyHours }
      POST /api/backups/:id/restore    session  roll back (after backing up the present)
      GET  /api/backups/:id/download   session  as an export file
+     POST /api/backup-links           session  new backup link { name } (read-only: downloads backups, nothing else)
+     GET  /api/backup-links/:id       session  reveal one
+     DELETE /api/backup-links/:id     session
 
    Settings — everything that used to mean editing Railway variables:
      GET  /api/settings               session  tokens (masked), password source, prefs
@@ -61,7 +66,8 @@ import { cleanSupplements } from "../js/supplements.js";
 import { DEFAULT_CATALOG } from "../js/achievements.js";
 import { createFoodLookup, USDA_SIGNUP } from "./food.mjs";
 import { createEstimator, AI_MODELS, DEFAULT_MODEL } from "./ai.mjs";
-import { createBackups, toExport } from "./backup.mjs";
+import { createBackups, toExport, summarize } from "./backup.mjs";
+import { sheetTables } from "./sheet.mjs";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BODY = 40 * 1024 * 1024; // a 90-day per-sample export can run to tens of MB
@@ -117,6 +123,7 @@ export async function createApp({
   const cfg = {
     auth: (await store.getMeta("auth")) || null, // { salt, hash, epoch, updatedAt }
     tokens: (await store.getMeta("tokens")) || [], // [{ id, name, token, createdAt, lastUsedAt, lastSync }]
+    backupLinks: (await store.getMeta("backupLinks")) || [], // [{ id, name, token, createdAt, lastUsedAt }] — read-only
     prefs: { ...DEFAULT_PREFS, ...((await store.getMeta("prefs")) || {}) },
     food: (await store.getMeta("foodApis")) || {}, // { usdaKey, anthropicKey, anthropicModel, fatsecretId, fatsecretSecret, offEnabled }
   };
@@ -156,6 +163,41 @@ export async function createApp({
   const saveAuth = async (next) => { cfg.auth = next; await store.setMeta("auth", next); };
   const saveTokens = async () => store.setMeta("tokens", cfg.tokens);
 
+  const isExport = (body) => !!body && typeof body === "object" && typeof body.days === "object" && body.days !== null && !Array.isArray(body.days);
+
+  /**
+   * Put an export back: Settings → Import, and Restore from the Google
+   * Sheet. Backs up what's here first, so it can be undone from Backups.
+   */
+  async function importDoc(body, reason) {
+    const days = {};
+    for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
+    await backups.take(reason, { kind: "safety" });
+    await store.replaceDays(days);
+    if (body.goals) await store.setMeta("goals", cleanGoals(keepSupplements(body.goals, await store.getMeta("goals"))));
+    // Exports since the food diary carry your library and training plan too.
+    let items = 0;
+    for (const kind of ITEM_KINDS) {
+      for (const raw of Array.isArray(body.library?.[`${kind}s`]) ? body.library[`${kind}s`] : []) {
+        const item = CLEAN[kind](raw);
+        if (item) { await store.putItem(kind, item.id, item); items += 1; }
+      }
+    }
+    if (body.plan !== undefined) await store.setMeta("trainingPlan", cleanPlan(body.plan));
+    // Backups and recovery copies also carry achievement settings and dashboard defaults.
+    const tiers = cleanTiers(body.achievements?.tiers);
+    if (tiers) await store.setMeta("achievementTiers", tiers);
+    const ledger = body.achievements?.ledger;
+    if (ledger && typeof ledger === "object" && ledger.entries && typeof ledger.entries === "object") {
+      await store.setMeta("achievementLedger", { initializedAt: typeof ledger.initializedAt === "string" ? ledger.initializedAt : null, entries: ledger.entries });
+    }
+    if (body.prefs && typeof body.prefs === "object") {
+      cfg.prefs = cleanPrefs(body.prefs, cfg.prefs);
+      await store.setMeta("prefs", cfg.prefs);
+    }
+    return { days: Object.keys(days).length, items };
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, "http://x");
     const path = url.pathname;
@@ -167,6 +209,47 @@ export async function createApp({
     }
     if (!hasPassword() && requireAuth) {
       return send(res, 503, "APP_PASSWORD is not set. Add it in Railway → Variables, then redeploy.", "text/plain");
+    }
+
+    // A daily copy kept off this server (the Google Sheet fetches it every night).
+    // The link can only download; an empty log is refused so a good copy is never replaced by nothing.
+    if (path === "/api/backup.json") {
+      if (method !== "GET") return json(res, 405, { error: "GET only" });
+      const given = bearer(req) ?? url.searchParams.get("token");
+      let match = null;
+      for (const l of cfg.backupLinks) if (sameSecret(given, l.token, secret) && !match) match = l;
+      if (!given || !match) return json(res, 401, { error: "Bad or missing backup link" });
+      const p = await backups.collect();
+      if (!Object.keys(p.days).length && !p.items.food.length) return json(res, 409, { error: "Your log is empty — nothing sent, so your last copy stays as it was" });
+      const at = new Date().toISOString();
+      match.lastUsedAt = at;
+      await store.setMeta("backupLinks", cfg.backupLinks);
+      const doc = toExport(p, at);
+      if (url.searchParams.get("sheet") === "1") return json(res, 200, { takenAt: at, summary: summarize(p), tables: sheetTables(doc), backup: doc });
+      res.setHeader("content-disposition", `attachment; filename="ash-health-backup-${at.slice(0, 10)}.json"`);
+      return json(res, 200, doc);
+    }
+
+    // Restore from the Google Sheet. The site's password is the key here (a backup link
+    // only reads), so this still works on a brand-new site after everything was lost —
+    // and the sheet's link is re-registered, so its nightly copies carry on.
+    if (path === "/api/restore") {
+      if (method !== "POST") return json(res, 405, { error: "POST only" });
+      const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+      if (pwLimit.blocked(ip)) return json(res, 429, { error: "Too many tries. Wait a minute." });
+      const body = await readJson(req);
+      if (hasPassword() && !checkPassword(body?.password)) {
+        pwLimit.fail(ip);
+        return json(res, 401, { error: "That's not the site's password" });
+      }
+      if (!isExport(body?.backup)) return json(res, 400, { error: "That backup can't be read" });
+      const r = await importDoc(body.backup, "Before restoring from your Google Sheet");
+      const link = typeof body.link === "string" && /^[\w-]{20,200}$/.test(body.link) ? body.link : null;
+      if (link && !cfg.backupLinks.some((l) => sameSecret(link, l.token, secret)) && cfg.backupLinks.length < 5) {
+        cfg.backupLinks.push({ id: randomUUID(), name: "Google Sheet", token: link, createdAt: new Date().toISOString() });
+        await store.setMeta("backupLinks", cfg.backupLinks);
+      }
+      return json(res, 200, { ok: true, ...r });
     }
 
     if (path === "/api/ingest") {
@@ -256,7 +339,7 @@ export async function createApp({
       });
     }
     if (path.startsWith("/api/backups")) return backupApi(req, res, method, path);
-    if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/prefs")
+    if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/backup-links") || path.startsWith("/api/prefs")
       || path === "/api/password" || path === "/api/sessions/revoke" || path.startsWith("/api/food-apis")) {
       return settingsApi(req, res, method, path);
     }
@@ -361,33 +444,8 @@ export async function createApp({
     }
     if (path === "/api/import" && method === "POST") {
       const body = await readJson(req);
-      if (!body || typeof body.days !== "object" || Array.isArray(body.days)) return json(res, 400, { error: "Not an Ash Health export" });
-      const days = {};
-      for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
-      await backups.take("Before importing a file", { kind: "safety" });
-      await store.replaceDays(days);
-      if (body.goals) await store.setMeta("goals", cleanGoals(keepSupplements(body.goals, await store.getMeta("goals"))));
-      // Exports since the food diary carry your library and training plan too.
-      let items = 0;
-      for (const kind of ITEM_KINDS) {
-        for (const raw of Array.isArray(body.library?.[`${kind}s`]) ? body.library[`${kind}s`] : []) {
-          const item = CLEAN[kind](raw);
-          if (item) { await store.putItem(kind, item.id, item); items += 1; }
-        }
-      }
-      if (body.plan !== undefined) await store.setMeta("trainingPlan", cleanPlan(body.plan));
-      // Backups and recovery copies also carry achievement settings and dashboard defaults.
-      const tiers = cleanTiers(body.achievements?.tiers);
-      if (tiers) await store.setMeta("achievementTiers", tiers);
-      const ledger = body.achievements?.ledger;
-      if (ledger && typeof ledger === "object" && ledger.entries && typeof ledger.entries === "object") {
-        await store.setMeta("achievementLedger", { initializedAt: typeof ledger.initializedAt === "string" ? ledger.initializedAt : null, entries: ledger.entries });
-      }
-      if (body.prefs && typeof body.prefs === "object") {
-        cfg.prefs = cleanPrefs(body.prefs, cfg.prefs);
-        await store.setMeta("prefs", cfg.prefs);
-      }
-      return json(res, 200, { ok: true, days: Object.keys(days).length, items });
+      if (!isExport(body)) return json(res, 400, { error: "Not an Ash Health export" });
+      return json(res, 200, { ok: true, ...(await importDoc(body, "Before importing a file")) });
     }
     if (path === "/api/review" && method === "GET") {
       return json(res, 200, { items: reviewItems((await store.getAll()).days) });
@@ -502,6 +560,7 @@ export async function createApp({
         fieldsSeen: (await store.getMeta("fieldsSeen")) || null,
         food: foodView(),
         backups: await backups.status(),
+        backupLinks: cfg.backupLinks.map(view),
         storageWhere: storage.where,
       });
     }
@@ -540,6 +599,25 @@ export async function createApp({
       cfg.prefs = next;
       await store.setMeta("prefs", next);
       return json(res, 200, { ok: true, prefs: next });
+    }
+    if (path === "/api/backup-links" && method === "POST") {
+      const body = await readJson(req);
+      if (cfg.backupLinks.length >= 5) return json(res, 400, { error: "Five backup links is the limit — delete one first" });
+      const l = { id: randomUUID(), name: String(body?.name ?? "").trim().slice(0, 60) || "iCloud Drive", token: newToken(), createdAt: new Date().toISOString() };
+      cfg.backupLinks.push(l);
+      await store.setMeta("backupLinks", cfg.backupLinks);
+      return json(res, 200, { ok: true, ...view(l), token: l.token });
+    }
+    const lm = path.match(/^\/api\/backup-links\/([\w-]+)$/);
+    if (lm) {
+      const l = cfg.backupLinks.find((x) => x.id === lm[1]);
+      if (!l) return json(res, 404, { error: "No such backup link" });
+      if (method === "GET") return json(res, 200, { ...view(l), token: l.token });
+      if (method === "DELETE") {
+        cfg.backupLinks = cfg.backupLinks.filter((x) => x !== l);
+        await store.setMeta("backupLinks", cfg.backupLinks);
+        return json(res, 200, { ok: true });
+      }
     }
     if (path === "/api/tokens" && method === "POST") {
       const body = await readJson(req);
