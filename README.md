@@ -14,14 +14,14 @@ npm test         # calculations, Apple Health parsing, and the server's auth and
 
 | Page | What it shows |
 |---|---|
-| **Today** | Goals hit as *5/8* (percentage second) with a **Finish today** list of what's left per goal · **Next unlock** (the one achievement realistically closest, with its reward) · stat cards · calorie ring with the success zone · macros · today vs your 14-day average · week grid (hit / missed / no data / in progress) · streaks · **this week** review (biggest win, biggest gap, change vs last week) · **consistency** (last 7 / 30 / previous 30 days) · **insights** once there's enough history · goal journey · weekly weight |
+| **Today** | Goals hit as *5/8* (percentage second) with a **Finish today** list of what's left per goal · **Next unlock** (the one achievement realistically closest, with its reward) · **supplements** checked off one by one · stat cards · calorie ring with the success zone · macros · today vs your 14-day average · week grid (hit / missed / no data / in progress) · streaks · **this week** review (biggest win, biggest gap, change vs last week) · **consistency** (last 7 / 30 / previous 30 days) · **insights** once there's enough history · goal journey · weekly weight |
 | **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one |
-| **Nutrition** | The **food diary** (breakfast / lunch / dinner / snacks, fast search-or-describe entry, every entry editable) · daily summary as *current / target — remaining* · **weekly calories** (weekly target, logged, target remaining, average available per remaining day, pacing chart) · trends from **complete** food days · food history meal by meal · **My foods** (recent, favorites, frequent, custom, meals) |
-| **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · **Strength**: the week against your training plan, sets you log, volume and new bests · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts |
+| **Nutrition** | The **food diary** (breakfast / lunch / dinner / snacks, fast search-or-describe entry, every entry editable, and **placeholders** — just the macros, for eating out) · daily summary as *current / target — remaining* · **weekly calories** (weekly target, logged, target remaining, average available per remaining day, pacing chart) · trends from **complete** food days · food history meal by meal · **My foods** (recent, favorites, frequent, custom, meals) |
+| **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · **Strength**: the week against your training plan, sets you log (or **repeat a past session** and adjust it), volume and new bests · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts |
 | **Sleep** | Bedtime → wake bars from your own logs, with your target window behind them, and average bedtime, wake, spread and nights on schedule |
 | **Calendar** | Each day shaded by goals hit; days with no data look empty rather than failed. Click a day for everything logged that day and where each number came from. |
 | **Achievements** | The trophy room: 5 badge families × 5 tiers (Weight Loss, Iron, Training Consistency, Nutrition Consistency, Complete Days), progress toward each, unlock dates (or "earned historically" when the date can't be known), what's up next and why, and **rewards you choose** — upcoming, ready to claim, claimed |
-| **Settings** | Goals (incl. weekly calories and estimated maintenance), Apple Health (sync status, upload tokens), data sources, **food lookup** keys, **training plan**, **achievement tiers**, dashboard defaults, password, backup, and the review of older entries |
+| **Settings** | Goals (incl. weekly calories and estimated maintenance), Apple Health (sync status, upload tokens), data sources, **food lookup** keys, **training plan**, **supplements**, **achievement tiers**, dashboard defaults, password, backup, and the review of older entries |
 
 ## Where each number comes from
 
@@ -31,7 +31,7 @@ Every stored day keeps each source in its own bucket, `{ manual, apple, legacy }
 |---|---|
 | Calories, protein, carbs, fat, fiber | **Manual only** |
 | Sleep (bedtime → wake) | **Manual only** |
-| Creatine | Manual only |
+| Supplements | Manual only |
 | Steps, active calories, exercise minutes | Apple Health, or a value you type (yours wins that day) |
 | Workouts | Apple Health's workouts, or your "worked out" tick |
 | Weight | A weigh-in you type, else Apple Health's |
@@ -39,6 +39,8 @@ Every stored day keeps each source in its own bucket, `{ manual, apple, legacy }
 Apple Health can't reach a manual-only metric: `/api/ingest` drops food and sleep before anything is stored, and the Apple bucket only accepts the fields above. Days saved before this existed were moved to `legacy` and their food and sleep are left out of every number until you sort them in **Settings → Review older entries**.
 
 Food is itemised in the diary (`manual.foods`, each entry with its numbers frozen at the amount you logged and where they came from). Older days keep their typed totals as a "quick add"; a day's food is the two added together. Lifts live in `manual.lifts`, on whichever day you pick in the lift log — any past day, so a session logged after midnight (or on the wrong day) can be put back where it belongs. Neither can arrive from Apple Health.
+
+Supplements are a list kept with your goals (`goals.supplements`: name, dose, and the dates each applies between); each day stores a yes/no per supplement (`manual.creatine` for creatine, from before there was a list, and `manual.supps` for the rest). The Supplements goal is hit when everything due that day was taken, and a supplement only counts from the day it's added until the day it's removed, so changing the list never rewrites past days. A **placeholder** is an ordinary diary entry tagged `placeholder`: a name and the macros, with calories worked out from 4/4/9 when left empty.
 
 **Missing is never zero.** Each goal is *hit*, *missed*, *no data* or (today) *in progress*. A hit is final as soon as it happens. A miss needs proof: a finished day, a complete food log, or a value that can't come back into range. Averages skip days without data and need at least 3 real observations. Adherence needs 10 judged goal-days. A goal date needs 14 weigh-ins over 3+ weeks and a real downward trend. Otherwise the page says "Not enough data yet".
 
@@ -119,7 +121,8 @@ js/views.js       one function per panel, and the pages built from them
 js/diary.js       the Nutrition page's food panels
 js/foodsheet.js   the add-food sheet: search, suggestions, editing, custom foods, meals
 js/trophies.js    Next unlock, trophy room, badge details, rewards, the unlock moment
-js/strength.js    the Strength card and the lift log (any day; moving a session)
+js/strength.js    the Strength card and the lift log (any day; moving or repeating a session)
+js/supplements.js the supplement list, daily check-offs and the Supplements goal
 js/recovery.js    this browser's recovery copy of your log
 js/app.js         routing, measured chart mounting, tooltip, dialogs, settings
 test/             node --test suites. On Postgres, one file at a time (they share the database):

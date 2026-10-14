@@ -59,10 +59,27 @@ export function openAdd(key, meal) {
   show();
 }
 
+/**
+ * A placeholder: a name and the macros, nothing else — for a restaurant
+ * meal or anything you can't log properly. It counts like any entry and
+ * is tagged Placeholder so you know the numbers are rough.
+ */
+export function openPlaceholder(key, meal) {
+  S = { mode: "diary", key, meal: meal || defaultMeal(key), view: "placeholder", q: "", remote: null };
+  S.ph = { entryId: null, name: "", nutrients: { kcal: null, protein: null, carbs: null, fat: null, fiber: null }, time: key === app.today() ? nowClock() : "", notes: "" };
+  show();
+}
+
 /** Edit an entry already in the diary. */
 export function openEntry(key, id) {
   const e = (app.state().raw[key]?.manual?.foods || []).find((x) => x.id === id);
   if (!e) return;
+  if (e.source?.kind === "placeholder") {
+    S = { mode: "diary", key, meal: e.meal, view: "placeholder", q: "", remote: null };
+    S.ph = { entryId: e.id, name: e.name, nutrients: Object.fromEntries(NUTRIENTS.map((n) => [n, e[n] ?? null])), time: e.time || "", notes: e.notes || "", group: e.group || null };
+    show();
+    return;
+  }
   S = { mode: "diary", key, meal: e.meal, view: "edit", q: "", remote: null };
   S.edit = { ...editFromEntry(e, "diary", e.id), meal: e.meal, time: e.time || "", notes: e.notes || "", group: e.group || null };
   show();
@@ -163,9 +180,10 @@ function existingIdFor(f) {
 function render() {
   if (!S) return;
   const v = S.view;
-  body.innerHTML = v === "edit" ? editView() : v === "meal" ? mealView() : v === "mealLog" ? mealLogView() : searchView();
+  body.innerHTML = v === "edit" ? editView() : v === "meal" ? mealView() : v === "mealLog" ? mealLogView() : v === "placeholder" ? placeholderView() : searchView();
   if (v === "browse" || v === "results") renderList();
   if (v === "edit") updateTotal();
+  if (v === "placeholder") updatePlaceholder();
 }
 
 function focusFirst() {
@@ -275,7 +293,85 @@ function browseList() {
       : `<div class="fs-note">${{ recent: "Foods you log will show up here for one-tap re-logging.", favorites: "Star foods to keep them here.", frequent: "Foods you log more than once show up here.", custom: "Foods you create yourself show up here." }[tab]}</div>`;
   }
   return `${tabs}<div class="fs-rows">${rows}</div>
-    <button type="button" class="fsr ghost" data-sa="create"><span class="fn"><b>Create a food</b><span>Enter the numbers yourself</span></span></button>`;
+    <button type="button" class="fsr ghost" data-sa="create"><span class="fn"><b>Create a food</b><span>Enter the numbers yourself</span></span></button>
+    ${S.mode === "diary" ? PH_ROW : ""}`;
+}
+
+const PH_ROW = `<button type="button" class="fsr ghost" data-sa="placeholder"><span class="fn"><b>Placeholder</b><span>Just the macros — eating out, or when you can't log it properly</span></span></button>`;
+const PH_STEP = { kcal: 50, protein: 5, carbs: 5, fat: 5, fiber: 1 };
+
+function placeholderView() {
+  const p = S.ph;
+  const editing = p.entryId != null;
+  const nut = NUTRIENTS.map((n) => `<div class="phn">
+      <span class="phl">${NUT_LABEL[n]}</span>
+      <div class="phc">
+        <button type="button" class="ib" data-sa="ph-step" data-n="${n}" data-d="-${PH_STEP[n]}" aria-label="${NUT_LABEL[n]} minus ${PH_STEP[n]}">−</button>
+        <span class="inp"><input name="n-${n}" type="number" min="0" step="${n === "kcal" ? 1 : 0.1}" inputmode="decimal" value="${p.nutrients[n] ?? ""}"
+          placeholder="${n === "kcal" ? "from macros" : "—"}"${n === "kcal" ? " data-autofocus" : ""} aria-label="${NUT_LABEL[n]}"><em>${n === "kcal" ? "kcal" : "g"}</em></span>
+        <button type="button" class="ib" data-sa="ph-step" data-n="${n}" data-d="${PH_STEP[n]}" aria-label="${NUT_LABEL[n]} plus ${PH_STEP[n]}">+</button>
+      </div>
+    </div>`).join("");
+  return `<form class="ph-form" novalidate>
+    ${headerFor(editing ? "Edit placeholder" : "Placeholder", editing ? null : "back")}
+    ${mealChips(S.meal)}
+    <label class="field"><span>What it was</span><span class="inp"><input name="name" maxlength="120" value="${esc(p.name)}" placeholder="Placeholder — e.g. Chipotle bowl"></span></label>
+    <div class="phgrid">${nut}</div>
+    <div class="fe-total" data-phtotal></div>
+    <div class="fields two">
+      <label class="field"><span>Time</span><span class="inp"><input name="time" type="time" value="${esc(p.time || "")}"></span></label>
+      <label class="field"><span>Notes</span><span class="inp"><input name="notes" maxlength="300" value="${esc(p.notes || "")}" placeholder="optional"></span></label>
+    </div>
+    <p class="hint small">Counts like any entry, tagged <b>Placeholder</b> so you know it's rough. Leave calories empty and they're worked out from the macros. Tap it in the diary to adjust later.</p>
+    <p class="err" data-err hidden></p>
+    <footer>
+      ${editing ? `<button type="button" class="btn danger ghost" data-sa="ph-delete">Delete entry</button>` : ""}
+      <button type="button" class="btn" data-sa="${editing ? "close" : "back"}">${editing ? "Cancel" : "Back"}</button>
+      <button type="submit" class="btn primary">${editing ? "Save" : `Add to ${MEALS.find((m) => m.id === S.meal)?.label || "diary"}`}</button>
+    </footer>
+  </form>`;
+}
+
+/** The placeholder's numbers as typed; calories fall back to 4/4/9 from the macros. */
+function readPlaceholder() {
+  const form = body.querySelector(".ph-form");
+  const p = S.ph;
+  if (!form) return p;
+  for (const n of NUTRIENTS) p.nutrients[n] = numOrNull(form.elements[`n-${n}`].value);
+  p.name = form.elements.name.value.trim();
+  p.time = form.elements.time.value;
+  p.notes = form.elements.notes.value.trim();
+  return p;
+}
+const fromMacros = (n) => (n.protein == null && n.carbs == null && n.fat == null ? null : Math.round((n.protein || 0) * 4 + (n.carbs || 0) * 4 + (n.fat || 0) * 9));
+
+function updatePlaceholder() {
+  const el = body.querySelector("[data-phtotal]");
+  if (!el) return;
+  const n = readPlaceholder().nutrients;
+  const m = fromMacros(n);
+  const kcal = n.kcal ?? m;
+  const off = n.kcal != null && m != null && Math.abs(n.kcal - m) > Math.max(60, n.kcal * 0.15);
+  el.innerHTML = kcal == null
+    ? `<span class="lbl">This entry</span><span class="muted">Enter calories, or the macros</span>`
+    : `<span class="lbl">This entry</span><b>${fmtInt(kcal)}</b> kcal${n.kcal == null ? " <span class=\"muted\">from macros</span>" : ""} · ${esc(macroLine(n))}${off ? ` <span class="muted">· macros add up to ${fmtInt(m)}</span> <button type="button" class="linkbtn" data-sa="ph-use">use it</button>` : ""}`;
+}
+
+async function savePlaceholder() {
+  const p = readPlaceholder();
+  const n = { ...p.nutrients };
+  const derived = n.kcal == null;
+  if (derived) n.kcal = fromMacros(n);
+  if (n.kcal == null) return fail("Enter calories, or at least one of protein, carbs or fat.");
+  const entry = cleanFoodEntry({
+    id: p.entryId || undefined, meal: S.meal, name: p.name || "Placeholder", qty: 1, unit: "serving",
+    serving: { label: "1 placeholder", amount: 1, unit: "serving" }, ...n,
+    source: { kind: "placeholder", ...(derived ? { note: "Calories worked out from the macros" } : {}) },
+    time: p.time, notes: p.notes, group: p.group || undefined,
+  });
+  await app.saveEntries(S.key, [entry], { replace: p.entryId ? [p.entryId] : [] });
+  app.toast(p.entryId ? "Placeholder updated" : `Added ${entry.name} to ${MEALS.find((m) => m.id === S.meal).label.toLowerCase()}`);
+  close();
 }
 
 function editView() {
@@ -582,6 +678,7 @@ async function onClick(ev) {
   if (a === "meal") {
     S.meal = el.dataset.v;
     if (S.edit && S.view === "edit") { readForm(); S.edit.meal = el.dataset.v; }
+    if (S.view === "placeholder") readPlaceholder();
     const keepFocus = document.activeElement?.name;
     render();
     if (keepFocus) body.querySelector(`[name="${keepFocus}"]`)?.focus();
@@ -615,6 +712,36 @@ async function onClick(ev) {
     startEdit({ name, brand: "", serving: { label: "1 serving", amount: 1, unit: "serving" }, nutrients: { kcal: null, protein: null, carbs: null, fat: null, fiber: null }, portions: [], source: { kind: "custom" } }, { qty: 1, unit: "serving" }, { showServing: true });
     render();
     body.querySelector("input[name=name]")?.focus();
+    return;
+  }
+  if (a === "placeholder") {
+    S.ph = { entryId: null, name: S.q.trim() && !/^\d/.test(S.q.trim()) ? S.q.trim() : "", nutrients: { kcal: null, protein: null, carbs: null, fat: null, fiber: null }, time: S.key === app.today() ? nowClock() : "", notes: "" };
+    S.view = "placeholder";
+    render();
+    focusFirst();
+    return;
+  }
+  if (a === "ph-step") {
+    const input = body.querySelector(`.ph-form input[name="n-${el.dataset.n}"]`);
+    if (!input) return;
+    const d = Number(el.dataset.d);
+    // An empty calories box starts from what the macros add up to.
+    const start = input.value === "" ? (el.dataset.n === "kcal" ? fromMacros(readPlaceholder().nutrients) ?? 0 : 0) : Number(input.value) || 0;
+    input.value = String(Math.max(0, Math.round((start + d) * 10) / 10));
+    updatePlaceholder();
+    return;
+  }
+  if (a === "ph-use") {
+    const input = body.querySelector(".ph-form input[name=n-kcal]");
+    const m = fromMacros(readPlaceholder().nutrients);
+    if (input && m != null) input.value = String(m);
+    updatePlaceholder();
+    return;
+  }
+  if (a === "ph-delete") {
+    if (!confirm(`Delete “${S.ph.name || "Placeholder"}” from the diary?`)) return;
+    await app.removeEntry(S.key, S.ph.entryId);
+    close();
     return;
   }
   if (a === "back") { S.view = S.q.trim() ? "results" : "browse"; S.edit = null; render(); focusFirst(); return; }
@@ -683,6 +810,7 @@ function onInput(ev) {
     if (t.name === "s-grams" || t.name === "s-label") refreshUnits();
     updateTotal();
   }
+  if (S.view === "placeholder") updatePlaceholder();
 }
 
 function onChange(ev) {
@@ -715,6 +843,6 @@ function onKey(ev) {
 function onSubmit(ev) {
   ev.preventDefault();
   if (!S) return;
-  const p = S.view === "edit" ? saveEdit() : S.view === "meal" ? saveMeal() : null;
+  const p = S.view === "edit" ? saveEdit() : S.view === "meal" ? saveMeal() : S.view === "placeholder" ? savePlaceholder() : null;
   p?.catch((err) => fail(err.message || "Couldn't save"));
 }

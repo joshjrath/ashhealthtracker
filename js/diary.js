@@ -33,6 +33,7 @@ const KIND = {
   database: { word: "Database", why: "A food database's values" },
   estimate: { word: "Estimated", why: "An AI estimate — check it" },
   custom: { word: "Custom", why: "Numbers you entered" },
+  placeholder: { word: "Placeholder", why: "Rough macros you entered — eating out, or nothing better to go on" },
 };
 
 /** VERIFIED · DATABASE · ESTIMATED · CUSTOM, with where the numbers came from on hover. */
@@ -101,9 +102,12 @@ export function foodDiaryCard(ctx, key) {
         <button type="button" class="nav" data-act="food-day" data-v="1" aria-label="Next day"${key >= today ? " disabled" : ""}>›</button>
       </div>
     </div>
-    <button type="button" class="addfood" data-act="food-add" data-key="${key}">
-      <span class="plus">+</span><span class="ph">Add food<span> — search or describe it: “2 eggs”, “6 oz chicken breast”, “Wawa turkey hoagie”</span></span>
-    </button>
+    <div class="addrow">
+      <button type="button" class="addfood" data-act="food-add" data-key="${key}">
+        <span class="plus">+</span><span class="ph">Add food<span> — search or describe it: “2 eggs”, “6 oz chicken breast”, “Wawa turkey hoagie”</span></span>
+      </button>
+      <button type="button" class="btn addph" data-act="food-ph" data-key="${key}" ${tip("Placeholder", "Just the macros — for eating out, or when you can't log it properly")}>Placeholder</button>
+    </div>
     <div class="meals">${meals}${quick}</div>
     <footer class="dfoot">${total}<div class="dctl">${ctl}</div></footer>
     ${status === "partial" ? `<p class="foot-note">A day counts toward averages and badges once you mark it complete — a half-logged day is never read as everything you ate.</p>` : ""}

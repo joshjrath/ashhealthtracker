@@ -5,7 +5,7 @@
    Apple Health can land in a manual-only metric:
 
      { manual: { foods: [...], kcal, protein, …, bed, wake, creatine, foodDone,
-                 lifts: [...], … },
+                 supps: { fish_oil: true, … }, lifts: [...], … },
        apple:  { steps, activeKcal, exerciseMin, weight, workouts: [...] },
        legacy: { … } }   ← values saved before sources were tracked
 
@@ -22,6 +22,7 @@
    This file is shared by the browser and the server.
    ────────────────────────────────────────────────────────────────────────── */
 import { dayFood, MEAL_IDS, UNIT_IDS } from "./nutrition.js";
+import { cleanSupps } from "./supplements.js";
 
 /**
  * For each metric, the buckets it may be read from, in priority order.
@@ -67,7 +68,7 @@ export function resolveDay(raw, key) {
   const effective = { ...manual };
   for (const n of FOOD_FIELDS) effective[n] = food.totals[n] ?? undefined;
   const bucket = { manual: effective, apple: b.apple || {}, legacy: b.legacy || {} };
-  const d = { src: {}, foods: food.entries, food, lifts: Array.isArray(manual.lifts) ? manual.lifts : [] };
+  const d = { src: {}, foods: food.entries, food, lifts: Array.isArray(manual.lifts) ? manual.lifts : [], supps: cleanSupps(manual.supps) || {} };
   if (key) d.key = key;
   for (const [field, from] of Object.entries(RULES)) {
     for (const s of from) {
@@ -142,7 +143,7 @@ function pick(raw, spec) {
 }
 
 const str = (v, max) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
-const SOURCE_KINDS = ["verified", "database", "estimate", "custom"];
+const SOURCE_KINDS = ["verified", "database", "estimate", "custom", "placeholder"];
 
 /** A food's provenance: where its numbers came from, and whether you changed them. */
 export function cleanSource(raw) {
@@ -224,6 +225,8 @@ export function cleanManual(raw) {
     const lifts = raw.lifts.slice(0, 60).map(cleanLift).filter(Boolean);
     if (lifts.length) d.lifts = lifts;
   }
+  const supps = cleanSupps(raw?.supps);
+  if (supps) d.supps = supps;
   return d;
 }
 

@@ -69,3 +69,44 @@ test("just past midnight with nothing logged today, the form offers yesterday", 
   assert.match(liftForm(ctx, { key: "2026-10-13", from: "2026-10-13", lifts: [blank()], lateNight: true }), /last night's session\?[\s\S]*Put it on Mon, Oct 12/);
   assert.doesNotMatch(liftForm(ctx, { key: "2026-10-13", from: "2026-10-13", lifts: [blank()], lateNight: false }), /last night/);
 });
+
+/* ── repeating a session ───────────────────────────────────────────────── */
+import { pastSessions, lastTime, copyLifts } from "../js/training.js";
+import { lastTimeHtml } from "../js/strength.js";
+
+test("past sessions are newest first and leave out the day being logged", () => {
+  const days = ctxFor(rawWith({ "2026-10-08": [bench], "2026-10-10": [squat], "2026-10-12": [bench, squat], "2026-10-11": [] }), "2026-10-13").days;
+  assert.deepEqual(pastSessions(days, "2026-10-12").map((p) => p.key), ["2026-10-10", "2026-10-08"]);
+  assert.deepEqual(pastSessions(days, "2026-10-13", 2).map((p) => p.key), ["2026-10-12", "2026-10-10"]);
+});
+
+test("a copied session is editable rows with the same sets and no ids — changing it never touches the original", () => {
+  const rows = copyLifts([bench, squat]);
+  assert.deepEqual(rows, [{ exercise: "Bench press", sets: [{ reps: 8, weight: 135, unit: "lb" }] }, { exercise: "Squat", sets: [{ reps: 5, weight: 225, unit: "lb" }] }]);
+  rows[0].sets[0].reps = 10;
+  rows[0].sets.push({ reps: 6, weight: 145, unit: "lb" });
+  assert.equal(bench.sets[0].reps, 8);
+  assert.equal(bench.sets.length, 1);
+});
+
+test("last time finds the latest other day with that exercise, by name in any case", () => {
+  const heavier = { ...bench, sets: [{ reps: 5, weight: 155, unit: "lb" }] };
+  const days = ctxFor(rawWith({ "2026-10-06": [bench], "2026-10-09": [heavier], "2026-10-12": [squat] }), "2026-10-13").days;
+  assert.deepEqual(lastTime(days, "  bench PRESS ", "2026-10-13"), { key: "2026-10-09", sets: heavier.sets });
+  assert.deepEqual(lastTime(days, "Bench press", "2026-10-09").key, "2026-10-06", "never the day being logged");
+  assert.equal(lastTime(days, "Deadlift", "2026-10-13"), null);
+  const draft = { key: "2026-10-13", lifts: [{ exercise: "Bench press", sets: [{ reps: "", weight: "", unit: "lb" }] }] };
+  assert.match(lastTimeHtml(days, draft, 0), /Last time, Fri, Oct 9: <b>5 @ 155 lb<\/b>.*Use these sets/);
+  draft.lifts[0].sets = [{ reps: "5", weight: "155", unit: "lb" }];
+  assert.doesNotMatch(lastTimeHtml(days, draft, 0), /Use these sets/, "nothing to use when it's the same");
+});
+
+test("the form offers past sessions to repeat, open while the form is empty", () => {
+  const ctx = ctxFor(rawWith({ "2026-10-12": [bench, squat] }), "2026-10-13");
+  const empty = liftForm(ctx, { key: "2026-10-13", from: "2026-10-13", lifts: [blank()] });
+  assert.match(empty, /<details class="lrepeat" open>/);
+  assert.match(empty, /data-act="lift-repeat" data-key="2026-10-12"[\s\S]*Bench press · Squat/);
+  const copied = liftForm(ctx, { key: "2026-10-13", from: "2026-10-13", lifts: copyLifts([bench]), copiedFrom: "2026-10-12" });
+  assert.match(copied, /<details class="lrepeat">/, "closed once there's something in the form");
+  assert.match(copied, /Copied from <b>Mon, Oct 12<\/b>/);
+});

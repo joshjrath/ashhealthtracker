@@ -23,6 +23,7 @@ import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
 import { strengthCard, setsText } from "./strength.js";
+import { DEFAULT_SUPPLEMENTS, currentSupps, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -60,7 +61,12 @@ function goalValue(id, day, g) {
     case "exercise": return day?.exerciseMin != null ? `${fmtInt(day.exerciseMin)} / ${g.exerciseMin} min` : "—";
     case "sleep": return fmtDur(sleepMinutes(day));
     case "workout": return day?.workout == null ? "—" : day.workout ? (day.workouts?.length ? `${day.workouts.length} done` : "Done") : "Rest";
-    case "creatine": return day?.creatine == null ? "—" : day.creatine ? "Taken" : "Skipped";
+    case "creatine": {
+      const c = suppCount(day, g.supplements || DEFAULT_SUPPLEMENTS);
+      if (!c) return "—";
+      if (c.done === c.of) return c.of === 1 ? "Taken" : `All ${c.of} taken`;
+      return `${c.done} of ${c.of} taken`;
+    }
     default: return "—";
   }
 }
@@ -83,7 +89,10 @@ function remaining(id, day, g) {
     case "exercise": return day?.exerciseMin == null ? "Nothing synced yet" : `${fmtInt(g.exerciseMin - day.exerciseMin)} min remaining`;
     case "sleep": return "Log last night's sleep";
     case "workout": return "No workout yet";
-    case "creatine": return "Not taken yet";
+    case "creatine": {
+      const c = suppCount(day, g.supplements || DEFAULT_SUPPLEMENTS);
+      return c?.left.length ? `${c.left.map((s) => s.name).join(", ")} left` : "Not taken yet";
+    }
     default: return "";
   }
 }
@@ -910,7 +919,10 @@ export function dayDetails(ctx, key) {
     </div>
     <div class="dsec"><h3>Body &amp; habits</h3>
       ${line("Weight", val(d?.weight != null ? fmt1(d.weight) : null, "lb"), "weight")}
-      ${line("Creatine", d?.creatine == null ? `<span class="muted">No data</span>` : `<b>${d.creatine ? "Taken" : "Skipped"}</b>`, "creatine")}
+      ${shownOn(g.supplements || DEFAULT_SUPPLEMENTS, d, key).map((s) => {
+        const v = taken(d, s.id);
+        return `<div class="dl"><span>${esc(suppLabel(s))}</span><span>${v == null ? `<span class="muted">No data</span>` : `<b>${v ? "Taken" : "Skipped"}</b><span class="srcTag manual">Logged by you</span>`}</span></div>`;
+      }).join("")}
     </div>
     <footer><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" data-act="food-open" data-key="${key}">Food diary</button>${key <= ctx.today ? `<button type="button" class="btn" data-act="lifts-open" data-key="${key}">${d?.lifts?.length ? "Edit lifts" : "Log lifts"}</button>` : ""}<button type="button" class="btn primary" data-act="log" data-key="${key}">Edit log</button></footer>`;
 }
@@ -933,6 +945,7 @@ const ICONS = {
   dumbbell: `<svg viewBox="0 0 20 20"><path d="M3 8v4M17 8v4M5.5 6v8M14.5 6v8M5.5 10h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   search: `<svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.8 12.8l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   shield: `<svg viewBox="0 0 20 20"><path d="M10 2.8l6 2.4v4.6c0 3.6-2.5 6.3-6 7.4-3.5-1.1-6-3.8-6-7.4V5.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.2 10l2 2 3.8-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  pill: `<svg viewBox="0 0 20 20"><rect x="3.2" y="7" width="13.6" height="6" rx="3" transform="rotate(-35 10 10)" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.1 6.9l3.8 6.2" transform="rotate(0)" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   trophy: `<svg viewBox="0 0 20 20"><path d="M6 3.5h8v4a4 4 0 0 1-8 0zM6 5H3.5v1.2A2.8 2.8 0 0 0 6.3 9M14 5h2.5v1.2A2.8 2.8 0 0 1 13.7 9M10 11.5v3M7 16.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 const SECTIONS = {
@@ -941,13 +954,14 @@ const SECTIONS = {
   sources: { title: "Data sources", color: "#8EDB57" },
   display: { title: "Dashboard defaults", color: "#5CC8F0" },
   training: { title: "Training plan", color: "#8EDB57" },
+  supplements: { title: "Supplements", color: "#62D6C4" },
   food: { title: "Food lookup", color: "#45B3C8" },
   achievements: { title: "Achievements", color: "#F2A79C" },
   security: { title: "Sign-in & security", color: "#9D8CF5" },
   data: { title: "Your data", color: "#62D6C4" },
   backups: { title: "Backups & rollback", color: "#56C990" },
 };
-const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", food: "search", achievements: "trophy", security: "lock", data: "data", backups: "shield" };
+const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", supplements: "pill", food: "search", achievements: "trophy", security: "lock", data: "data", backups: "shield" };
 
 function secHead(id, desc) {
   const s = SECTIONS[id];
@@ -978,6 +992,7 @@ function overview(ctx) {
     ["sources", "Food & sleep manual only"],
     ["food", fl ? `USDA ${fl.usda.set ? "key" : "demo key"}${fl.fatsecretId.set ? " · FatSecret" : ""}${fl.offEnabled ? " · Open Food Facts" : ""} · AI ${fl.anthropic.set ? "on" : "off"}` : ""],
     ["training", plan ? `${count("strength")} strength · ${count("cardio")} cardio · ${count("any")} any · ${count("rest")} rest` : "No plan yet"],
+    ["supplements", (() => { const l = currentSupps(g.supplements || DEFAULT_SUPPLEMENTS); return l.length ? l.map((s) => s.name).join(" · ") : "None"; })()],
     ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
@@ -1103,7 +1118,7 @@ function sourcesSection(ctx) {
         ${rule("Calories, protein, carbs, fat, fiber", '<span class="srcTag manual">Manual</span>')}
         ${rule("Sleep (bedtime → wake)", '<span class="srcTag manual">Manual</span>')}
         ${rule("Lifts (sets × reps × weight)", '<span class="srcTag manual">Manual</span>')}
-        ${rule("Creatine", '<span class="srcTag manual">Manual</span>')}
+        ${rule("Supplements", '<span class="srcTag manual">Manual</span>')}
       </div>
       <div><h3>Apple Health allowed</h3>
         ${rule("Steps", '<span class="srcTag apple">Apple</span> or you')}
@@ -1148,6 +1163,47 @@ function reviewSection(ctx) {
     <div class="rvlist">${rows}</div>
     <div class="actions"><button type="submit" class="btn primary">Keep ticked, set aside the rest</button><span class="saved" data-saved hidden></span></div>
   </form>`;
+}
+
+function supplementsSection(ctx) {
+  const list = currentSupps(ctx.g.supplements || DEFAULT_SUPPLEMENTS);
+  const gone = (ctx.g.supplements || []).length - list.length;
+  const rowOf = (s) => `<div class="supprow">
+      <span class="inp"><input name="sn-${s.id}" value="${esc(s.name)}" maxlength="40" required aria-label="Name"></span>
+      <span class="inp"><input name="sd-${s.id}" value="${esc(s.dose || "")}" maxlength="30" placeholder="Dose (optional)" aria-label="Dose"></span>
+      <button type="button" class="ib" data-act="supp-remove" data-v="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">×</button>
+    </div>`;
+  return `<form class="card sc" id="sec-supplements" data-form="supplements">
+    ${secHead("supplements", "What you take each day. Every one gets its own check-off on Today and in Log a day, and the Supplements goal is hit once you've taken everything on the list.")}
+    <div class="supplist">${list.map(rowOf).join("") || `<div class="empty-row">No supplements yet — the Supplements goal is left out of your score until you add one.</div>`}
+      <div class="supprow add">
+        <span class="inp"><input name="sn-new" maxlength="40" placeholder="Add a supplement" aria-label="New supplement"></span>
+        <span class="inp"><input name="sd-new" maxlength="30" placeholder="Dose" aria-label="New supplement dose"></span>
+        <span></span>
+      </div>
+    </div>
+    <p class="hint small">A supplement counts toward the goal from the day you add it, and stops counting the day you remove it — so changing the list never rewrites past days.${gone ? ` ${gone} removed supplement${gone === 1 ? " stays" : "s stay"} in the days you logged ${gone === 1 ? "it" : "them"}.` : ""}</p>
+    <div class="actions"><button class="btn primary" type="submit">Save supplements</button><span class="saved" data-saved hidden></span></div>
+  </form>`;
+}
+
+/** Today's check-offs, one tap each. */
+export function supplementsCard(ctx) {
+  const list = ctx.g.supplements || DEFAULT_SUPPLEMENTS;
+  const day = dayAt(ctx.days, ctx.today);
+  const shown = shownOn(list, day, ctx.today);
+  if (!shown.length) return "";
+  const due = dueOn(list, ctx.today);
+  const done = due.filter((s) => taken(day, s.id) === true).length;
+  return `<section class="card supps">
+    <div class="cardhead"><h2>Supplements <span class="sub">${done === due.length ? "all taken today" : `${done} of ${due.length} taken today`}</span></h2>
+      <a class="linkbtn quiet" href="#/settings" data-jump="sec-supplements">Edit list</a></div>
+    <div class="suppchecks">${shown.map((s) => {
+      const on = taken(day, s.id) === true;
+      return `<button type="button" class="suppchk${on ? " on" : ""}" role="checkbox" aria-checked="${on}" data-act="supp-toggle" data-key="${ctx.today}" data-v="${s.id}">
+        <span class="box">${on ? CHECK : ""}</span><span class="nm"><b>${esc(s.name)}</b>${s.dose ? `<em>${esc(s.dose)}</em>` : ""}</span></button>`;
+    }).join("")}</div>
+  </section>`;
 }
 
 function trainingSection(ctx) {
@@ -1330,6 +1386,7 @@ export function settings(ctx) {
     ${sourcesSection(ctx)}
     ${foodSection(ctx)}
     ${trainingSection(ctx)}
+    ${supplementsSection(ctx)}
     ${achievementsSection(ctx)}
     ${displaySection(ctx)}
     ${securitySection(ctx)}
@@ -1345,7 +1402,7 @@ export const PAGES = {
   today: {
     title: "Today",
     render: (ctx) => `${pageHeader(ctx, "Today")}${demoBanner(ctx)}${reviewNudge(ctx)}
-      <div class="grid top">${scoreCard(ctx)}<div class="topright">${nextUnlockCard(ctx)}${statCards(ctx)}</div></div>
+      <div class="grid top">${scoreCard(ctx)}<div class="topright">${nextUnlockCard(ctx)}${supplementsCard(ctx)}${statCards(ctx)}</div></div>
       <div class="grid three">${calorieCard(ctx)}${macroCard(ctx)}${todayVsAvg(ctx)}</div>
       <div class="grid wide-right">${heatmap(ctx)}${streaksCard(ctx)}</div>
       <div class="grid wide-right">${weeklyReviewCard(ctx)}${consistencyCard(ctx)}</div>

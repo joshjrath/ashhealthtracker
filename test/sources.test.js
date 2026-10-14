@@ -58,3 +58,13 @@ test("review: keep moves food into manual as a complete log; reject sets it asid
   assert.equal(resolveDay(gone).kcal, undefined);
   assert.equal(reviewItems({ x: gone }).length, 0);
 });
+
+test("a placeholder entry keeps its kind and counts like any entry", async () => {
+  const { cleanFoodEntry: clean, resolveDay: resolve } = await import("../js/sources.js");
+  const e = clean({ meal: "dinner", name: "Chipotle bowl", qty: 1, unit: "serving", serving: { label: "1 placeholder", amount: 1, unit: "serving" }, kcal: 950, protein: 55, carbs: 90, fat: 35, fiber: null, source: { kind: "placeholder", note: "Calories worked out from the macros" } });
+  assert.equal(e.source.kind, "placeholder");
+  assert.equal(e.source.note, "Calories worked out from the macros");
+  const d = resolve({ manual: { foods: [e], foodDone: true }, apple: {} }, "2026-10-12");
+  assert.equal(d.kcal, 950);
+  assert.equal(d.protein, 55);
+});

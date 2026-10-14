@@ -57,6 +57,7 @@ import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
 import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "../js/sources.js";
 import { CLEAN, matchFoods } from "../js/library.js";
 import { cleanPlan } from "../js/training.js";
+import { cleanSupplements } from "../js/supplements.js";
 import { DEFAULT_CATALOG } from "../js/achievements.js";
 import { createFoodLookup, USDA_SIGNUP } from "./food.mjs";
 import { createEstimator, AI_MODELS, DEFAULT_MODEL } from "./ai.mjs";
@@ -268,10 +269,11 @@ export async function createApp({
         const manual = await withLock(key, async () => {
           const prev = (await store.getDay(key))?.manual || {};
           // PUT replaces what you logged but keeps the diary and lifts unless they're sent;
-          // PATCH changes only the fields sent (null clears one).
+          // PATCH changes only the fields sent (null clears one) — and only the supplements sent,
+          // so checking off two in quick succession can't undo the first.
           const next = method === "PUT"
             ? cleanManual({ ...body, foods: "foods" in body ? body.foods : prev.foods, lifts: "lifts" in body ? body.lifts : prev.lifts })
-            : cleanManual({ ...prev, ...body });
+            : cleanManual({ ...prev, ...body, supps: body.supps && typeof body.supps === "object" ? { ...prev.supps, ...body.supps } : "supps" in body ? body.supps : prev.supps });
           await store.putManual(key, next);
           await countUses(prev.foods, next.foods);
           return next;
@@ -353,7 +355,7 @@ export async function createApp({
       return json(res, 200, { ok: true });
     }
     if (path === "/api/goals" && method === "PUT") {
-      const goals = cleanGoals(await readJson(req));
+      const goals = cleanGoals(keepSupplements(await readJson(req), await store.getMeta("goals")));
       await store.setMeta("goals", goals);
       return json(res, 200, { ok: true, goals });
     }
@@ -364,7 +366,7 @@ export async function createApp({
       for (const [k, d] of Object.entries(body.days)) if (KEY_RE.test(k)) days[k] = cleanStored(d);
       await backups.take("Before importing a file", { kind: "safety" });
       await store.replaceDays(days);
-      if (body.goals) await store.setMeta("goals", cleanGoals(body.goals));
+      if (body.goals) await store.setMeta("goals", cleanGoals(keepSupplements(body.goals, await store.getMeta("goals"))));
       // Exports since the food diary carry your library and training plan too.
       let items = 0;
       for (const kind of ITEM_KINDS) {
@@ -674,11 +676,17 @@ function cleanTiers(raw) {
   return out;
 }
 
+/** Goals sent without a supplement list (a page from before there was one, an older export) keep the saved list. */
+function keepSupplements(raw, prev) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw.supplements) || !Array.isArray(prev?.supplements)) return raw;
+  return { ...raw, supplements: prev.supplements };
+}
+
 function cleanGoals(raw) {
   const out = { ...DEFAULT_GOALS };
   if (!raw || typeof raw !== "object") return out;
   for (const k of Object.keys(DEFAULT_GOALS)) {
-    if (k === "tracked") continue;
+    if (k === "tracked" || k === "supplements") continue;
     if (typeof DEFAULT_GOALS[k] === "string") {
       if (typeof raw[k] === "string" && /^\d{2}:\d{2}$/.test(raw[k])) out[k] = raw[k];
       continue;
@@ -687,6 +695,7 @@ function cleanGoals(raw) {
     if (Number.isFinite(v) && v >= 0) out[k] = v;
   }
   if (Array.isArray(raw.tracked)) out.tracked = raw.tracked.filter((id) => GOAL_IDS.includes(id));
+  out.supplements = cleanSupplements(raw.supplements);
   if (out.kcalLow > out.kcalHigh) [out.kcalLow, out.kcalHigh] = [out.kcalHigh, out.kcalLow];
   return out;
 }

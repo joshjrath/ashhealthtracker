@@ -185,3 +185,26 @@ export function knownExercises(days) {
   }
   return Object.keys(count).sort((a, b) => count[b] - count[a]).map((k) => label[k]);
 }
+
+/* ── repeating a session ───────────────────────────────────────────────── */
+
+/** Days with lifts, newest first, leaving out `except` — the sessions you can repeat. */
+export function pastSessions(days, except, n = 8) {
+  return Object.keys(days).filter((k) => k !== except && days[k]?.lifts?.length).sort().reverse().slice(0, n)
+    .map((key) => ({ key, lifts: days[key].lifts }));
+}
+
+/** The most recent time this exercise was logged on another day: { key, sets } or null. */
+export function lastTime(days, exercise, except) {
+  const ek = exerciseKey(exercise || "");
+  if (!ek) return null;
+  for (const k of Object.keys(days).filter((x) => x !== except).sort().reverse()) {
+    const l = (days[k]?.lifts || []).find((x) => exerciseKey(x.exercise) === ek);
+    if (l) return { key: k, sets: l.sets };
+  }
+  return null;
+}
+
+/** Lifts as fresh, editable form rows: same exercises and sets, no ids (saving gives new ones). */
+export const copyLifts = (lifts) => lifts.map((l) => ({ exercise: l.exercise, sets: l.sets.map((s) => ({ reps: s.reps, weight: s.weight, unit: s.unit })) }));
+

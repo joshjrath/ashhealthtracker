@@ -13,12 +13,13 @@ import { esc } from "./charts.js";
 import { resolveDay, cleanLift } from "./sources.js";
 import { evaluate, buildCatalog, unseenUnlocks, DEFAULT_CATALOG } from "./achievements.js";
 import { badgeDetail, nextPanel, rewardForm, celebration } from "./trophies.js";
-import { liftForm, liftTyped, liftDirty, liftWrites } from "./strength.js";
-import { cleanPlan, WEEKDAYS } from "./training.js";
+import { liftForm, liftTyped, liftDirty, liftWrites, lastTimeHtml } from "./strength.js";
+import { cleanPlan, WEEKDAYS, copyLifts, lastTime } from "./training.js";
 import { cleanMeal, cleanReward, cleanFood, newId } from "./library.js";
 import { dayLabel } from "./diary.js";
-import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, closeSheet } from "./foodsheet.js";
+import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, openPlaceholder, closeSheet } from "./foodsheet.js";
 import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
+import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
 
 /*
  * state.raw  — days as stored: { manual, apple, legacy } buckets (sample days while demo is on)
@@ -388,6 +389,7 @@ const ACTS = {
     ui.foodDay = next >= today ? null : next;
   },
   "food-add": (el) => { openAdd(el.dataset.key || foodDay(ctx()), el.dataset.meal); return false; },
+  "food-ph": (el) => { openPlaceholder(el.dataset.key || foodDay(ctx()), el.dataset.meal); return false; },
   "food-edit": (el) => { openEntry(el.dataset.key, el.dataset.id); return false; },
   "food-done": (el) => { markFoodDone(el.dataset.key, el.dataset.v === "1"); return false; },
   "food-open": (el) => {
@@ -454,24 +456,69 @@ const ACTS = {
   "celebrate-dismiss": () => { ackUnlocks(shownUnlocks); celebrateEl.hidden = true; render(); return false; },
   /* lifting */
   "lifts-open": (el) => { openLifts(el.dataset.key || keyOf(new Date())); return false; },
-  "lift-add-ex": () => { syncLifts(); liftDraft.lifts.push({ exercise: "", sets: [{ reps: "", weight: "", unit: lastUnit() }] }); refreshPanel(); focusLast("input[name^=ex-]"); return false; },
+  "lift-add-ex": () => { syncLifts(); liftDraft.lifts.push({ exercise: "", sets: [{ reps: "", weight: "", unit: lastUnit() }] }); redrawPanel(); focusLast("input[name^=ex-]"); return false; },
   "lift-add-set": (el) => {
     syncLifts();
     const l = liftDraft.lifts[Number(el.dataset.i)];
     const prev = l.sets[l.sets.length - 1];
     l.sets.push(prev ? { ...prev } : { reps: "", weight: "", unit: lastUnit() });
-    refreshPanel();
+    redrawPanel();
     return false;
   },
-  "lift-del-set": (el) => { syncLifts(); liftDraft.lifts[Number(el.dataset.i)].sets.splice(Number(el.dataset.j), 1); refreshPanel(); return false; },
-  "lift-del-ex": (el) => { syncLifts(); liftDraft.lifts.splice(Number(el.dataset.i), 1); refreshPanel(); return false; },
+  "lift-del-set": (el) => { syncLifts(); liftDraft.lifts[Number(el.dataset.i)].sets.splice(Number(el.dataset.j), 1); redrawPanel(); return false; },
+  "lift-del-ex": (el) => { syncLifts(); liftDraft.lifts.splice(Number(el.dataset.i), 1); redrawPanel(); return false; },
   "lift-day": (el) => {
     syncLifts();
     const v = Number(el.dataset.v);
     liftDay(v === 0 ? keyOf(new Date()) : addDays(liftDraft.key, v));
     return false;
   },
-  "lift-keep": () => { syncLifts(); liftDraft.key = liftDraft.from; refreshPanel(); return false; },
+  /* supplements */
+  "supp-toggle": (el) => {
+    const key = el.dataset.key, id = el.dataset.v;
+    leaveDemo();
+    const manual = state.raw[key]?.manual || {};
+    const v = taken(manual, id) === true ? null : true;
+    setDay(key, applyCheckoff(manual, id, v));
+    commit(() => api.patchDay(key, checkoff(id, v)));
+    return false;
+  },
+  "supp-remove": (el) => {
+    const list = state.goals.supplements || DEFAULT_SUPPLEMENTS;
+    const s = list.find((x) => x.id === el.dataset.v);
+    if (!s || !confirm(`Remove ${s.name} from your list? Days you've already logged keep it.`)) return false;
+    const today = keyOf(new Date());
+    // Added today and gone today: nothing to keep. Otherwise it stops counting from today on.
+    saveSupplements(s.since === today ? list.filter((x) => x !== s) : list.map((x) => (x === s ? { ...x, until: today } : x)));
+    return false;
+  },
+  "lift-repeat": (el) => {
+    syncLifts();
+    const src = state.days[el.dataset.key]?.lifts || [];
+    liftDraft.beforeCopy = structuredClone(liftDraft.lifts);
+    // empty rows give way; anything already in the form stays above the copy
+    liftDraft.lifts = [...liftDraft.lifts.filter((l) => liftTyped({ lifts: [l] })), ...copyLifts(src)];
+    liftDraft.copiedFrom = el.dataset.key;
+    redrawPanel();
+    return false;
+  },
+  "lift-repeat-open": (el) => { openLifts(keyOf(new Date())); return ACTS["lift-repeat"](el); },
+  "lift-repeat-undo": () => {
+    liftDraft.lifts = liftDraft.beforeCopy || liftDraft.lifts;
+    delete liftDraft.beforeCopy;
+    delete liftDraft.copiedFrom;
+    redrawPanel();
+    return false;
+  },
+  "lift-last": (el) => {
+    syncLifts();
+    const l = liftDraft.lifts[Number(el.dataset.i)];
+    const last = l && lastTime(state.days, l.exercise, liftDraft.key);
+    if (last) l.sets = copyLifts([{ exercise: l.exercise, sets: last.sets }])[0].sets;
+    redrawPanel();
+    return false;
+  },
+  "lift-keep": () => { syncLifts(); liftDraft.key = liftDraft.from; redrawPanel(); return false; },
   "lift-view": () => {
     syncLifts();
     if (liftDirty(state.raw, liftDraft) && !confirm(`Drop what's in the form and open ${fmtDay(liftDraft.key)}'s lifts?`)) return false;
@@ -651,7 +698,9 @@ function fillLog(key) {
   form.elements.bed.value = manual.bed ?? "";
   form.elements.wake.value = manual.wake ?? "";
   form.elements.workout.checked = manual.workout === true;
-  form.elements.creatine.checked = manual.creatine === true;
+  const supps = shownOn(state.goals.supplements || DEFAULT_SUPPLEMENTS, manual, key);
+  document.getElementById("supplist").innerHTML = supps.map((s) => `<label class="chk"><input type="checkbox" name="supp" value="${s.id}"${taken(manual, s.id) === true ? " checked" : ""}><i style="--c:#62D6C4"></i>${esc(suppLabel(s))}</label>`).join("")
+    || `<p class="hint small">Nothing on your list — add what you take in Settings → Supplements.</p>`;
   form.elements.foodDone.checked = manual.foodDone === true;
   const ws = resolved.workouts?.length || 0;
   document.getElementById("workouthint").textContent = ws ? `Apple Health has ${ws} workout${ws === 1 ? "" : "s"} for this day.` : "";
@@ -700,10 +749,17 @@ form.addEventListener("submit", (e) => {
   if (bed && wake) { m.bed = bed; m.wake = wake; }
   // An unticked box on a past day is a "no"; on today it just means "not yet".
   const tick = (name) => (form.elements[name].checked ? true : isToday ? undefined : false);
-  for (const name of ["workout", "creatine"]) {
-    const v = tick(name);
-    if (v !== undefined) m[name] = v;
+  const w = tick("workout");
+  if (w !== undefined) m.workout = w;
+  // Supplements the same way — though one that wasn't on your list yet that day is never a "no".
+  const list = state.goals.supplements || DEFAULT_SUPPLEMENTS;
+  let withSupps = m;
+  for (const box of form.querySelectorAll("input[name=supp]")) {
+    const due = dueOn(list.filter((s) => s.id === box.value), key).length > 0;
+    const v = box.checked ? true : isToday || !due ? undefined : false;
+    withSupps = applyCheckoff(withSupps, box.value, v);
   }
+  Object.assign(m, withSupps);
   if (form.elements.foodDone.checked) m.foodDone = true;
   // The dialog edits the day's totals; its diary entries and lifts stay (the server keeps them too).
   const prev = state.raw[key]?.manual || {};
@@ -877,6 +933,15 @@ function refreshPanel() {
   if (!panel || !paneldlg.open) return;
   if (panel.kind === "reward") return; // a form being typed into is left alone
   if (panel.kind === "lifts") syncLifts();
+  redrawPanel();
+}
+/**
+ * Redraw from the draft as it is. The lift form's own buttons read the form
+ * first and then add, remove or replace rows — reading it again here would
+ * pour the old rows' values into the new ones.
+ */
+function redrawPanel() {
+  if (!panel || !paneldlg.open) return;
   const top = paneldlg.scrollTop;
   panelBody.innerHTML = panelHtml();
   paneldlg.scrollTop = top;
@@ -918,12 +983,12 @@ function openLifts(key) {
  */
 function liftDay(next) {
   const today = keyOf(new Date());
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(next || "")) return refreshPanel();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next || "")) return redrawPanel();
   if (next > today) next = today;
-  if (next === liftDraft.key) return refreshPanel();
+  if (next === liftDraft.key) return redrawPanel();
   if (!liftTyped(liftDraft)) return openLifts(next);
   liftDraft.key = next;
-  refreshPanel();
+  redrawPanel();
 }
 /** Read what's typed into the draft before the form redraws. */
 function syncLifts() {
@@ -942,6 +1007,14 @@ function syncLifts() {
 // typed applies on Enter or when you leave the field, so the form doesn't
 // redraw under your keystrokes.
 let dayTypedAt = 0;
+// Naming an exercise you've done before shows what you did last time, without redrawing the form.
+paneldlg.addEventListener("input", (e) => {
+  const m = /^ex-(\d+)$/.exec(e.target.name || "");
+  if (!m || !liftDraft) return;
+  syncLifts();
+  const box = panelBody.querySelector(`[data-last="${m[1]}"]`);
+  if (box) box.innerHTML = lastTimeHtml(state.days, liftDraft, Number(m[1]));
+});
 paneldlg.addEventListener("keydown", (e) => {
   if (e.target.name !== "day" || !liftDraft) return;
   dayTypedAt = Date.now();
@@ -976,6 +1049,12 @@ function saveLifts(lifts) {
   commit(async () => {
     for (const w of writes) await api.patchDay(w.key, { lifts: w.lifts });
   });
+}
+
+function saveSupplements(list) {
+  state.goals = { ...state.goals, supplements: cleanSupplements(list) };
+  const { plan, ...send } = state.goals;
+  commit(() => api.putGoals(send)).then(() => flash("#sec-supplements", "Saved"));
 }
 
 /* ── settings forms ────────────────────────────────────────────────────── */
@@ -1046,6 +1125,20 @@ const FORMS = {
     state.achievements.tiers = r.tiers;
     render();
     flash("#sec-achievements", "Saved — progress recalculated");
+  },
+  supplements(f) {
+    const list = (state.goals.supplements || DEFAULT_SUPPLEMENTS).map((s) => {
+      if (s.until) return s;
+      const name = f.elements[`sn-${s.id}`]?.value.trim();
+      const dose = f.elements[`sd-${s.id}`]?.value.trim() ?? s.dose;
+      return { ...s, name: name || s.name, dose };
+    });
+    const name = f.elements["sn-new"].value.trim();
+    if (name) {
+      if (currentSupps(list).some((s) => s.name.toLowerCase() === name.toLowerCase()) && !confirm(`${name} is already on your list. Add it again?`)) return;
+      list.push({ id: suppId(name, list), name, dose: f.elements["sd-new"].value.trim(), since: keyOf(new Date()) });
+    }
+    saveSupplements(list);
   },
   goals(f) {
     const next = { ...state.goals };

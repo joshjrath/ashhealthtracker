@@ -18,6 +18,7 @@
    ────────────────────────────────────────────────────────────────────────── */
 import { FOOD_FIELDS } from "./sources.js";
 import { plannedFor } from "./training.js";
+import { DEFAULT_SUPPLEMENTS, suppStatus } from "./supplements.js";
 
 /** One colour per metric. Protein/Carbs/Fat are validated as a set (they
     share the composition bar); the rest only ever sit beside a label. */
@@ -33,7 +34,8 @@ export const METRICS = {
   exercise: { label: "Exercise", unit: "min", color: "#8EDB57" },
   sleep: { label: "Sleep", unit: "", color: "#9D8CF5" },
   workout: { label: "Workout", unit: "", color: "#F27DB5" },
-  creatine: { label: "Creatine", unit: "", color: "#62D6C4" },
+  // "creatine" is the Supplements goal — the id is kept from when it tracked creatine alone, so saved goals still match.
+  creatine: { label: "Supplements", unit: "", color: "#62D6C4" },
 };
 
 /** Every goal the score can be built from, in the order they're shown. */
@@ -58,6 +60,7 @@ export const DEFAULT_GOALS = {
   bedTarget: "23:00",
   wakeTarget: "07:00",
   tracked: ["calories", "protein", "fiber", "steps", "active", "exercise", "sleep", "creatine"],
+  supplements: DEFAULT_SUPPLEMENTS,
 };
 
 /** Smallest samples worth reporting. Below these, the page says so instead. */
@@ -175,7 +178,7 @@ export function goalStatus(id, day, g, isToday = false) {
       // A rest day only counts as a miss when you said so, or the Watch synced that day.
       return day?.workout === false || day?.appleFitness ? "miss" : "none";
     }
-    case "creatine": return day?.creatine === true ? "hit" : day?.creatine === false ? "miss" : open;
+    case "creatine": return suppStatus(day, g.supplements || DEFAULT_SUPPLEMENTS, isToday);
     default: return "none";
   }
 }
