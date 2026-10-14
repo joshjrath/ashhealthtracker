@@ -243,6 +243,12 @@ test("Restore from the sheet: wrong password refused; right one brings everythin
   assert.ok(bk.some((b) => b.reason === "Before restoring from your Google Sheet" && b.kind === "safety"));
 });
 
+test("the script asks Google for this one sheet only — wider access gets unreviewed scripts blocked", () => {
+  const script = sheetScript({ site: base, link });
+  assert.ok(script.startsWith("/** @OnlyCurrentDoc */"), "the annotation leads the file");
+  assert.doesNotMatch(script, /SpreadsheetApp\.(openById|openByUrl|create)|DriveApp|GmailApp/, "nothing that needs access beyond this sheet");
+});
+
 test("the restore menu explains itself when there's nothing to restore, and cancelling does nothing", () => {
   const g = fakeGoogle(() => { throw new Error("should not be called"); });
   const fns = load(sheetScript({ site: base, link }), g.env);

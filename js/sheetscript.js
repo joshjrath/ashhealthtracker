@@ -15,13 +15,24 @@
    nothing, and the site refuses to send an empty log, so a good copy is
    never replaced by nothing.
 
+   It starts with @OnlyCurrentDoc, so Google asks for this one sheet only.
+   Without it, the script's access to all of your spreadsheets is the kind
+   Google blocks outright ("This app is blocked") for unreviewed scripts.
+
    Apps Script runs on Google's servers (V8), not in this page — this file
    only builds its text.
    ────────────────────────────────────────────────────────────────────────── */
 
 /** The script, ready to paste. */
 export function sheetScript({ site, link }) {
-  return `/**
+  return `/** @OnlyCurrentDoc */
+/*
+ * The line above keeps this script to this one sheet: Google then asks only
+ * for access to it, not to all your spreadsheets (which it blocks for
+ * scripts it hasn't reviewed).
+ */
+
+/**
  * Ash Health → this Google Sheet, every night.
  *
  * Set up once: paste this into Extensions → Apps Script, save, pick "setup"
@@ -197,4 +208,22 @@ function status(ss, message, ok) {
   sh.getRange(3, 2, rows.length - 2, 1).setWrap(true);
 }
 `;
+}
+
+/**
+ * The script's appsscript.json, naming exactly what it needs — for when
+ * Google still blocks it. timeZone sets when "around 3am" is.
+ */
+export function sheetManifest(timeZone = "America/New_York") {
+  return JSON.stringify({
+    timeZone,
+    runtimeVersion: "V8",
+    exceptionLogging: "STACKDRIVER",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/spreadsheets.currentonly", // this sheet only
+      "https://www.googleapis.com/auth/script.container.ui", // the Ash Health menu and its dialogs
+      "https://www.googleapis.com/auth/script.external_request", // fetching from your site
+      "https://www.googleapis.com/auth/script.scriptapp", // the nightly run
+    ],
+  }, null, 2);
 }

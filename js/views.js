@@ -24,7 +24,7 @@ import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, lib
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
 import { strengthCard, setsText } from "./strength.js";
 import { DEFAULT_SUPPLEMENTS, currentSupps, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
-import { sheetScript } from "./sheetscript.js";
+import { sheetScript, sheetManifest } from "./sheetscript.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -1399,6 +1399,16 @@ function sheetBackup(ctx) {
       </ol>
       <div class="actions"><button type="button" class="btn primary" data-act="sheet-copy" data-v="${esc(shown.id)}">Copy script</button><span class="hint small">The script holds a private link that can read your log — only share the sheet with people you'd trust with it.</span></div>
       <textarea class="scriptbox" readonly rows="8" aria-label="Google Sheet script">${esc(script)}</textarea>
+      <details class="howto"><summary>Google says “This app is blocked” or “Access blocked”?</summary>
+        <ol>
+          <li>“Access blocked … OAuth client is not fully created yet” clears up by itself: wait 5 minutes and press Run again.</li>
+          <li>For “This app is blocked”: make sure the script you pasted starts with <code>/** @OnlyCurrentDoc */</code> (copy it again from here if not), save, and Run <b>setup</b> again.</li>
+          <li>Still blocked? In Apps Script, open <b>Project Settings</b> (the gear) → tick <b>Show "appsscript.json" manifest file in editor</b>. Back in the editor, open <b>appsscript.json</b>, replace everything in it with the text below (<b>Copy settings</b>), save, and Run <b>setup</b> again. It tells Google exactly the four things the script uses — this sheet, its menu, your site and the nightly run — and nothing else.</li>
+          <li>Do it in a browser window signed in to just one Google account (an Incognito window works), since Google's sign-in for scripts gets confused with several accounts at once.</li>
+        </ol>
+        <div class="actions"><button type="button" class="btn" data-act="manifest-copy">Copy settings</button></div>
+        <textarea class="scriptbox manifestbox" readonly rows="6" aria-label="appsscript.json">${esc(sheetManifest(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"))}</textarea>
+      </details>
     </div>` : ""}
     <details class="howto"><summary>Restoring from the sheet</summary>
       <ol>

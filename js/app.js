@@ -357,8 +357,13 @@ const ACTS = {
     else revealed[key] = (await api.revealBackupLink(el.dataset.v).catch(failed))?.token;
     render();
   },
+  "manifest-copy": (el) => {
+    const box = document.querySelector(".manifestbox");
+    if (box) copy(box.value, el);
+    return false;
+  },
   "sheet-copy": (el) => {
-    const box = document.querySelector(".scriptbox");
+    const box = document.querySelector(".scriptbox:not(.manifestbox)");
     if (box) copy(box.value, el);
     return false;
   },
