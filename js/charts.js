@@ -540,3 +540,104 @@ export function energyChart(weeks, { width, height = 280, fmtDay }) {
     ${dots}${hits}
   </svg>`;
 }
+
+/**
+ * Strength index by week: overall (bold) and Push / Pull / Legs, chain-linked
+ * so 100 is the first week, with the weekly average body weight dashed on the
+ * right axis. Gaps (a week without that kind of session) are bridged.
+ */
+export function strengthIndexChart(rows, { width, height = 260, fmtDay, bw = [] }) {
+  const P = { l: 44, r: 52, t: 14, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  const first = rows.findIndex((r) => r.all != null);
+  if (first < 0 || rows.filter((r) => r.all != null).length < 3) return `<div class="nodata">Three or more weeks of logged sets draw this chart.</div>`;
+  const R = rows.slice(first), B = bw.slice(first);
+  const series = ["legs", "pull", "push", "all"];
+  const vals = R.flatMap((r) => series.map((s) => r[s])).filter((v) => v != null);
+  let lo = Math.min(97, ...vals), hi = Math.max(103, ...vals);
+  const step = niceStep(hi - lo, 4);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const wt = B.filter((v) => v != null);
+  let wlo = Math.min(...wt), whi = Math.max(...wt);
+  if (wt.length) { const pad = Math.max(1, (whi - wlo) * 0.2); wlo = Math.floor(wlo - pad); whi = Math.ceil(whi + pad); }
+  const n = R.length;
+  const x = (i) => P.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  const yw = (v) => P.t + ((whi - v) / (whi - wlo || 1)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) {
+    grid += `<line class="grid${Math.abs(v - 100) < 1e-9 ? " mid" : ""}" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+      <text class="axis${Math.abs(v - 100) < 1e-9 ? " on" : ""}" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+  }
+  if (wt.length) for (const v of [wlo, (wlo + whi) / 2, whi]) grid += `<text class="axis" x="${W - P.r + 8}" y="${(yw(v) + 4).toFixed(1)}">${Math.round(v)} lb</text>`;
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / 80))));
+  let xl = "";
+  R.forEach((r, i) => { if ((n - 1 - i) % every === 0) xl += `<text class="axis" x="${x(i).toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(r.monday, true))}</text>`; });
+  const path = (s) => R.map((r, i) => [i, r[s]]).filter(([, v]) => v != null).map(([i, v], j) => `${j ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const lines = series.map((s) => { const d = path(s); return d ? `<path class="si-line si-${s}" d="${d}"/>` : ""; }).join("");
+  const dots = R.map((r, i) => (r.all == null ? "" : `<circle class="si-dot" cx="${x(i).toFixed(1)}" cy="${y(r.all).toFixed(1)}" r="3"/>`)).join("");
+  let wline = "", pen = false;
+  B.forEach((v, i) => { if (v == null) { pen = false; return; } wline += `${pen ? "L" : "M"}${x(i).toFixed(1)},${yw(v).toFixed(1)}`; pen = true; });
+  const colw = iw / Math.max(1, n - 1);
+  const f = (v) => (v == null ? "—" : v.toFixed(1));
+  const hits = R.map((r, i) => `<g class="hit" ${tip(`Week of ${fmtDay(r.monday)}`, `Overall ${f(r.all)}${r.allN ? ` · ${r.allN} lift${r.allN === 1 ? "" : "s"}` : " · no lifting"}`, `Push ${f(r.push)} · Pull ${f(r.pull)} · Legs ${f(r.legs)}`, B[i] != null ? `Body weight ${B[i].toFixed(1)} lb` : "")}>
+      <rect x="${(x(i) - colw / 2).toFixed(1)}" y="${P.t}" width="${Math.max(colw, 2).toFixed(1)}" height="${ih}" fill="transparent"/>
+      <line class="cross" x1="${x(i).toFixed(1)}" x2="${x(i).toFixed(1)}" y1="${P.t}" y2="${P.t + ih}"/></g>`).join("");
+  return `<svg class="plot sindex" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Strength index by week, overall and by push, pull and legs, with body weight">
+    ${grid}${xl}${wline ? `<path class="ewline" d="${wline}"/>` : ""}${lines}${dots}${hits}
+  </svg>`;
+}
+
+/**
+ * One lift's sessions: best estimated 1-rep max (or reps, for bodyweight
+ * moves) per session, new all-time bests ringed, and the six-week robust
+ * trend drawn through the recent ones.
+ */
+export function liftChart(ex, { width, height = 240, fmtDay, since }) {
+  const P = { l: 48, r: 18, t: 14, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  const metric = ex.sessions.at(-1)?.metric || "e1rm";
+  const all = ex.sessions.filter((s) => s.metric === metric);
+  let best = -Infinity;
+  const marked = all.map((s) => { const pr = s.value > best * 1.005 && best > -Infinity; best = Math.max(best, s.value); return { ...s, pr }; });
+  const S = marked.filter((s) => s.key >= since);
+  if (S.length < 2) return `<div class="nodata">Two or more sessions of ${esc(ex.name)} draw this chart.</div>`;
+  const dn = (k) => { const [yy, mm, dd] = k.split("-").map(Number); return Math.round(Date.UTC(yy, mm - 1, dd) / 864e5); };
+  const dayN = (k) => dn(k) - dn(since);
+  const x0 = dayN(S[0].key), x1 = Math.max(x0 + 7, dayN(S.at(-1).key));
+  const vs = S.map((s) => s.value);
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  const pad = Math.max(metric === "reps" ? 1 : 5, (hi - lo) * 0.15);
+  const step = niceStep(hi - lo + 2 * pad, 4);
+  lo = Math.floor((lo - pad) / step) * step; hi = Math.ceil((hi + pad) / step) * step;
+  const x = (d) => P.l + ((d - x0) / (x1 - x0)) * iw;
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+      <text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+  const every = Math.max(1, Math.ceil(S.length / Math.max(2, Math.floor(iw / 70))));
+  let xl = "";
+  S.forEach((s, i) => { if ((S.length - 1 - i) % every === 0) xl += `<text class="axis" x="${x(dayN(s.key)).toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(s.key, true))}</text>`; });
+  let tl = "";
+  const t = ex.trend?.trend;
+  const inWin = t && ex.trend.from ? S.filter((s) => s.key >= ex.trend.from) : [];
+  if (inWin.length >= 2) {
+    const off = dayN(ex.trend.from);
+    const a = dayN(inWin[0].key), b = dayN(inWin.at(-1).key);
+    const ya = t.at(a - off), yb = t.at(b - off);
+    if (b > a) tl = `<line class="lt-trend" x1="${x(a).toFixed(1)}" y1="${y(ya).toFixed(1)}" x2="${x(b).toFixed(1)}" y2="${y(yb).toFixed(1)}"/>`;
+  }
+  const line = S.map((s, i) => `${i ? "L" : "M"}${x(dayN(s.key)).toFixed(1)},${y(s.value).toFixed(1)}`).join("");
+  const unit = metric === "reps" ? "reps" : "lb";
+  const pts = S.map((s) => {
+    const cx = x(dayN(s.key)).toFixed(1), cy = y(s.value).toFixed(1);
+    return `<g class="hit" ${tip(fmtDay(s.key), metric === "reps" ? `Best set ${s.best.reps} reps` : `Est. 1-rep max ${Math.round(s.value)} lb${s.rough ? " (rough — high reps)" : ""}`, `Best set ${s.best.reps} × ${s.best.weight} ${s.best.unit} · ${s.sets} working set${s.sets === 1 ? "" : "s"}`, s.pr ? "New best" : "")}>
+      <circle cx="${cx}" cy="${cy}" r="12" fill="transparent"/>
+      ${s.pr ? `<circle class="lt-pr" cx="${cx}" cy="${cy}" r="7"/>` : ""}<circle class="lt-dot" cx="${cx}" cy="${cy}" r="3.6"/></g>`;
+  }).join("");
+  return `<svg class="plot lift" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="${esc(ex.name)}: ${metric === "reps" ? "best reps" : "estimated one-rep max"} by session, in ${unit}">
+    ${grid}${xl}<path class="lt-line" d="${line}"/>${tl}${pts}
+  </svg>`;
+}

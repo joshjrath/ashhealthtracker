@@ -588,6 +588,9 @@ const ACTS = {
     commit(() => api.putGoals(send)).then(() => toast(`Calorie target set to ${t.toLocaleString("en-US")} kcal`));
     return false;
   },
+  /* strength */
+  liftex: (el) => { ui.liftEx = el.dataset.v; },
+  "lift-all": () => { ui.liftAll = !ui.liftAll; },
   "advice-dismiss": (el) => {
     ui.adviceDismissed = Number(el.dataset.v);
     try { localStorage.setItem("ash-health-advice-dismissed", String(ui.adviceDismissed)); } catch { /* this browser only */ }
@@ -1315,6 +1318,16 @@ const FORMS = {
       }
     }
     saveSupplements(list);
+  },
+  exgroups(f) {
+    const groups = { ...(state.goals.exerciseGroups || {}) };
+    for (let i = 0; f.elements[`gk-${i}`]; i++) {
+      const k = f.elements[`gk-${i}`].value, v = f.elements[`g-${i}`].value;
+      if (v) groups[k] = v; else delete groups[k];
+    }
+    state.goals = { ...state.goals, exerciseGroups: groups };
+    const { plan, ...send } = state.goals;
+    commit(() => api.putGoals(send)).then(() => flash("#overload", "Saved"));
   },
   goals(f) {
     const next = { ...state.goals };

@@ -62,6 +62,7 @@ export const DEFAULT_GOALS = {
   wakeTarget: "07:00",
   tracked: ["calories", "protein", "fiber", "steps", "active", "exercise", "sleep", "creatine"],
   supplements: DEFAULT_SUPPLEMENTS,
+  exerciseGroups: {}, // your own muscle group for an exercise: { "bench press": "chest" } — see liftstats.js
   ...PROFILE_DEFAULTS, // about you: see profile.js
 };
 

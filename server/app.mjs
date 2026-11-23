@@ -62,6 +62,7 @@ import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
 import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "../js/sources.js";
 import { CLEAN, matchFoods } from "../js/library.js";
 import { cleanPlan } from "../js/training.js";
+import { cleanExerciseGroups } from "../js/liftstats.js";
 import { cleanSupplements } from "../js/supplements.js";
 import { cleanProfile, PROFILE_KEYS } from "../js/profile.js";
 import { DEFAULT_CATALOG } from "../js/achievements.js";
@@ -830,6 +831,7 @@ function keepSupplements(raw, prev) {
   const out = { ...raw };
   if (!Array.isArray(raw.supplements) && Array.isArray(prev.supplements)) out.supplements = prev.supplements;
   for (const k of PROFILE_KEYS) if (!(k in raw) && k in prev) out[k] = prev[k];
+  if (!raw.exerciseGroups && prev.exerciseGroups) out.exerciseGroups = prev.exerciseGroups;
   return out;
 }
 
@@ -837,7 +839,7 @@ function cleanGoals(raw) {
   const out = { ...DEFAULT_GOALS };
   if (!raw || typeof raw !== "object") return out;
   for (const k of Object.keys(DEFAULT_GOALS)) {
-    if (k === "tracked" || k === "supplements" || PROFILE_KEYS.includes(k)) continue;
+    if (k === "tracked" || k === "supplements" || k === "exerciseGroups" || PROFILE_KEYS.includes(k)) continue;
     if (typeof DEFAULT_GOALS[k] === "string") {
       if (typeof raw[k] === "string" && /^\d{2}:\d{2}$/.test(raw[k])) out[k] = raw[k];
       continue;
@@ -847,6 +849,7 @@ function cleanGoals(raw) {
   }
   if (Array.isArray(raw.tracked)) out.tracked = raw.tracked.filter((id) => GOAL_IDS.includes(id));
   out.supplements = cleanSupplements(raw.supplements);
+  out.exerciseGroups = cleanExerciseGroups(raw.exerciseGroups);
   Object.assign(out, cleanProfile(raw));
   if (out.kcalLow > out.kcalHigh) [out.kcalLow, out.kcalHigh] = [out.kcalHigh, out.kcalLow];
   return out;

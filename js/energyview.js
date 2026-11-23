@@ -9,6 +9,7 @@
 import { adaptiveTdee, plateau, weightTrend, intakeSummary, calorieAdvice, pastPlateaus, PHASES } from "./energy.js";
 import { esc, tip } from "./charts.js";
 import { fmtInt } from "./metrics.js";
+import { strengthAnalysis } from "./liftstats.js";
 
 const CONF = {
   preliminary: { word: "Preliminary", why: "Mostly your maintenance setting so far — it calibrates once there are 2+ weeks of complete food days and weigh-ins." },
@@ -40,8 +41,10 @@ export function energyOf(ctx) {
   const trend = weightTrend(days, today, 28);
   const intake = intakeSummary(days, today);
   const weight = trend.enough ? trend.now : plat.nowAvg;
-  const advice = weight ? calorieAdvice({ days, g, today, energy, plat, phase, strength: ctx.strength, weight }) : null;
-  ctx._energy = { energy, plat, trend, intake, advice, phase, weight };
+  // strength first: a sustained decline makes the calorie suggestion gentler
+  const strength = strengthAnalysis(days, g, today, { energy, trend, intake, weight });
+  const advice = weight ? calorieAdvice({ days, g, today, energy, plat, phase, strength, weight }) : null;
+  ctx._energy = { energy, plat, trend, intake, advice, phase, weight, strength };
   return ctx._energy;
 }
 

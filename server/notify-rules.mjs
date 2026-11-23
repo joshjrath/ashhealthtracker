@@ -15,15 +15,16 @@
    or, from a feature, call notifier.emit() directly with its own `type`.
    Planned features hook in the same way: weekly reports ("insights.report"),
    the daily briefing ("insights.briefing"), readiness ("recovery.readiness"),
-   nutrient gaps ("nutrition.micros"), progressive overload and strength
-   trends ("fitness.overload", "fitness.decline"), custom challenges
+   nutrient gaps ("nutrition.micros"), custom challenges
    ("achievements.challenge") and phase transitions ("phases.transition").
+   Strength trends are live: "fitness.decline" and "fitness.ready".
    ────────────────────────────────────────────────────────────────────────── */
 import { DEFAULT_GOALS, addDays, range, foodStatus, sleepMinutes, mondayOf, fmtDur } from "../js/metrics.js";
 import { resolveDay, reviewItems } from "../js/sources.js";
 import { evaluate, buildCatalog } from "../js/achievements.js";
 import { plannedFor, weekStatus, liftHistory, PLAN_LABELS } from "../js/training.js";
-import { adaptiveTdee, plateau, calorieAdvice } from "../js/energy.js";
+import { adaptiveTdee, plateau, calorieAdvice, weightTrend, intakeSummary } from "../js/energy.js";
+import { strengthAnalysis } from "../js/liftstats.js";
 import { hm, localNow } from "./notify.mjs";
 
 const H = 3600_000;
@@ -44,15 +45,16 @@ export async function buildContext({ store, cfg, storage, settings, at }) {
   const days = Object.fromEntries(Object.keys(raw).filter((k) => k <= today).map((k) => [k, resolveDay(raw[k], k)]));
   const g = { ...DEFAULT_GOALS, ...(all.goals || {}), plan: plan || null };
   const hasData = Object.keys(days).length > 0;
-  let energy = null, plat = null, advice = null;
+  let energy = null, plat = null, advice = null, strength = null;
   if (hasData) {
     energy = adaptiveTdee(days, g, today);
     plat = plateau(days, g, today, energy, g.phase || "cut");
     const w = plat.t28?.now ?? plat.nowAvg ?? null;
-    advice = w ? calorieAdvice({ days, g, today, energy, plat, phase: g.phase || "cut", weight: w }) : null;
+    strength = strengthAnalysis(days, g, today, { energy, trend: weightTrend(days, today, 28), intake: intakeSummary(days, today), weight: w });
+    advice = w ? calorieAdvice({ days, g, today, energy, plat, phase: g.phase || "cut", strength, weight: w }) : null;
   }
   const ach = hasData ? evaluate({ days, g, today, catalog: buildCatalog(catalog, tiers), rewards: rewards || [] }) : null;
-  return { local, today, min: local.minutes, days, raw, g, energy, plat, advice, ach, lastSync, cfg, storage, settings, at, hasData };
+  return { local, today, min: local.minutes, days, raw, g, energy, plat, advice, strength, ach, lastSync, cfg, storage, settings, at, hasData };
 }
 
 const avg7 = (days, today) => {
@@ -89,7 +91,7 @@ export const RULES = [
       if (!p || doneWorkout(days[today])) return n.cancel(key);
       if (!r.on || min < hm(r.time)) return;
       if (p === "rest") n.emit({ type: "reminder.rest", category: "fitness", priority: "reminder", key, title: "Planned rest day", body: "Rest is part of the plan — it counts toward your week.", link: "#/fitness" });
-      else n.emit({ type: "reminder.workout", category: "fitness", priority: "reminder", key, title: `Today's plan: ${PLAN_LABELS[p]}`, body: "Nothing logged yet today. Already trained? Log it and this goes away.", link: "#/fitness" });
+      else n.emit({ type: "reminder.workout", category: "fitness", priority: "reminder", key, title: `Today's plan: ${PLAN_LABELS[p]}${["push", "pull", "legs"].includes(p) ? " day" : ""}`, body: "Nothing logged yet today. Already trained? Log it and this goes away.", link: "#/fitness" });
     },
   },
   {
@@ -220,6 +222,27 @@ export const RULES = [
       if (!g.plan) return;
       const mon = mondayOf(today);
       if (weekStatus(days, g.plan, mon, today).status === "hit") n.emit({ type: "fitness.planWeek", category: "fitness", priority: "info", key: `fit:plan:${mon}`, title: "Training plan done for the week", body: "Every planned session this week is in. Rest days count too.", link: "#/fitness" });
+    },
+  },
+
+  {
+    // A drop that has lasted several sessions on more than one lift — never one bad day.
+    id: "fitness.decline", category: "fitness",
+    run({ strength, today }, n) {
+      if (!strength) return;
+      if (strength.status !== "declining") return n.cancel("fit:decline");
+      const lifts = strength.exercises.filter((e) => e.trend.status === "declining").map((e) => e.name);
+      const why = strength.preservation.notes.filter((x) => x.kind === "concern" || x.kind === "watch").map((x) => x.text.split(" — ")[0].split(". ")[0]).slice(0, 2);
+      n.emit({ type: "fitness.decline", category: "fitness", priority: "important", key: "fit:decline", fp: mondayOf(today), minGapH: 6 * 24, title: "Strength has been slipping", body: `Down over several sessions on ${lifts.slice(0, 3).join(", ")}${lifts.length > 3 ? ` and ${lifts.length - 3} more` : ""}.${why.length ? ` Possible factors: ${why.join("; ")}.` : ""} Not a diagnosis — details on the Fitness page.`, link: "#/fitness" });
+    },
+  },
+  {
+    // Lifts where double progression says it's time to add weight (at most every few days).
+    id: "fitness.ready", category: "fitness",
+    run({ strength }, n) {
+      const ready = strength?.ready || [];
+      if (!ready.length) return;
+      n.emit({ type: "fitness.ready", category: "fitness", priority: "info", key: "fit:ready", fp: ready.map((e) => `${e.key}:${e.next.title}`).sort().join("|"), minGapH: 72, title: ready.length === 1 ? `Ready to progress: ${ready[0].name}` : `${ready.length} lifts ready to progress`, body: ready.slice(0, 4).map((e) => `${e.name}: ${e.next.title.replace("Ready: ", "try ")}`).join(" · "), link: "#/fitness" });
     },
   },
 

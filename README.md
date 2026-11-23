@@ -15,9 +15,9 @@ npm test         # calculations, Apple Health parsing, and the server's auth and
 | Page | What it shows |
 |---|---|
 | **Today** | Goals hit as *5/8* (percentage second) with a **Finish today** list of what's left per goal · **Next unlock** (the one achievement realistically closest, with its reward) · **supplements** checked off one by one · stat cards · calorie ring with the success zone · macros · today vs your 14-day average · week grid (hit / missed / no data / in progress) · streaks · **this week** review (biggest win, biggest gap, change vs last week) · **consistency** (last 7 / 30 / previous 30 days) · **insights** once there's enough history · goal journey · weekly weight |
-| **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one |
+| **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one · **Metabolism & energy balance**: adaptive maintenance estimate with its range and confidence, intake from complete days, deficit, a suggested calorie target you can accept or decline, plateau check |
 | **Nutrition** | The **food diary** (breakfast / lunch / dinner / snacks, fast search-or-describe entry, every entry editable, and **placeholders** — just the macros, for eating out) · daily summary as *current / target — remaining* · **weekly calories** (weekly target, logged, target remaining, average available per remaining day, pacing chart) · trends from **complete** food days · food history meal by meal · **My foods** (recent, favorites, frequent, custom, meals) |
-| **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · **Strength**: the week against your training plan, sets you log (or **repeat a past session** and adjust it), volume and new bests · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts |
+| **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · **Strength**: the week against your training plan, sets you log (or **repeat a past session** and adjust it), volume and new bests · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts · **Strength & muscle preservation** (status, strength index vs body weight, protein, what to watch) · **Progressive overload** (per lift: est. 1-rep max, six-week trend, ready to add weight / build reps / stalled) · **Training volume & recovery** (sets a week per muscle group, the past seven days as Push / Pull / Legs, rest days, sleep) |
 | **Sleep** | Bedtime → wake bars from your own logs, with your target window behind them, and average bedtime, wake, spread and nights on schedule |
 | **Calendar** | Each day shaded by goals hit; days with no data look empty rather than failed. Click a day for everything logged that day and where each number came from. |
 | **Achievements** | The trophy room: 5 badge families × 5 tiers (Weight Loss, Iron, Training Consistency, Nutrition Consistency, Complete Days), progress toward each, unlock dates (or "earned historically" when the date can't be known), what's up next and why, and **rewards you choose** — upcoming, ready to claim, claimed |
@@ -121,6 +121,9 @@ server/notify.mjs  notifications: dedupe, cooldowns, digests, quiet hours, push
 server/notify-rules.mjs  the rules that watch your data
 server/webpush.mjs Web Push encryption and VAPID, no third-party code
 js/energy.js      adaptive TDEE, weight trend, plateaus, calorie advice
+js/energyview.js  the Weight page's Metabolism & energy balance card
+js/liftstats.js   strength analysis: muscle groups, e1RM trends, double progression, index, weekly volume
+js/strengthview.js the Fitness page's strength preservation, overload and volume cards
 js/profile.js     about you: resting energy and body-fat formulas
 server/db.mjs     Postgres storage (days, meta, items, snapshots), or a JSON file without a DATABASE_URL
 server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit

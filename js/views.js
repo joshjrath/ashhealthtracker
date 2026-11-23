@@ -15,10 +15,11 @@ import {
   workoutsIn, fitnessTotals, workoutStreak, weeklyReview, insights,
   fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
-import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart } from "./charts.js";
+import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart, strengthIndexChart, liftChart } from "./charts.js";
 import { reviewItems } from "./sources.js";
 import { MEALS } from "./nutrition.js";
 import { WEEKDAYS, WEEKDAY_LABELS, PLAN_TYPES, PLAN_LABELS } from "./training.js";
+import { preservationCard, overloadCard, volumeCard, strengthOf, chosenLift } from "./strengthview.js";
 import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
@@ -996,7 +997,7 @@ function overview(ctx) {
     ["apple", sync],
     ["sources", "Food & sleep manual only"],
     ["food", fl ? `USDA ${fl.usda.set ? "key" : "demo key"}${fl.fatsecretId.set ? " · FatSecret" : ""}${fl.offEnabled ? " · Open Food Facts" : ""} · AI ${fl.anthropic.set ? "on" : "off"}` : ""],
-    ["training", plan ? `${count("strength")} strength · ${count("cardio")} cardio · ${count("any")} any · ${count("rest")} rest` : "No plan yet"],
+    ["training", plan ? PLAN_TYPES.filter((t) => count(t)).map((t) => `${count(t)} ${PLAN_LABELS[t].replace("Any workout", "any").toLowerCase()}`).join(" · ") : "No plan yet"],
     ["supplements", (() => {
       const all = g.supplements || DEFAULT_SUPPLEMENTS, l = currentSupps(all), p = pausedSupps(all).length;
       return [l.length ? l.map((s) => s.name).join(" · ") : "None right now", p ? `${p} paused` : ""].filter(Boolean).join(" · ");
@@ -1247,7 +1248,7 @@ function trainingSection(ctx) {
     ${ctx.state.demo && !saved ? `<p class="hint small">Showing the sample plan. Save to make it yours.</p>` : ""}
     <div class="fields seven">${selects}</div>
     <div class="fields"><label class="field"><span>Plan applies from</span><span class="inp"><input type="date" name="since" value="${esc(plan?.since || "")}"></span></label></div>
-    <p class="hint small">Weeks before this date aren't judged against the plan. Leave it empty to apply the plan to your whole history.</p>
+    <p class="hint small">Weeks before this date aren't judged against the plan. Leave it empty to apply the plan to your whole history. Running a Push/Pull/Legs split? Pick Push, Pull or Legs for each day — they count as strength days, and the Fitness page shows what each session actually trained.</p>
     <div class="actions"><button class="btn primary" type="submit">Save plan</button>${saved ? `<button type="button" class="btn danger ghost" data-act="plan-clear">Remove plan</button>` : ""}<span class="saved" data-saved hidden></span></div>
   </form>`;
 }
@@ -1522,6 +1523,9 @@ export const PAGES = {
     render: (ctx) => `${pageHeader(ctx, "Fitness", false)}${demoBanner(ctx)}
       <div class="grid wide-right">${activityCard(ctx)}${fitnessStatsCard(ctx)}</div>
       ${strengthCard(ctx)}
+      ${preservationCard(ctx)}
+      ${overloadCard(ctx)}
+      ${volumeCard(ctx)}
       ${workoutWeekCard(ctx)}
       <div class="grid wide-right">${exerciseWeeksCard(ctx)}${workoutMixCard(ctx)}</div>
       ${activityCalendar(ctx)}
@@ -1558,6 +1562,15 @@ export const foodDay = (ctx) => (ctx.ui.foodDay && ctx.ui.foodDay <= ctx.today ?
 /* ── measured charts ───────────────────────────────────────────────────── */
 
 export const CHARTS = {
+  sindex: (ctx, width) => {
+    const rows = strengthOf(ctx).index;
+    const bw = rows.map((w) => { const v = range(w.monday, w.end).map((k) => ctx.days[k]?.weight).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; });
+    return strengthIndexChart(rows, { width, fmtDay, bw, height: width < 520 ? 230 : 260 });
+  },
+  liftex: (ctx, width) => {
+    const ex = chosenLift(ctx);
+    return ex ? liftChart(ex, { width, fmtDay, since: addDays(ctx.today, -7 * 16 + 1), height: width < 520 ? 210 : 240 }) : "";
+  },
   energy: (ctx, width) => energyChart(energyOf(ctx).energy.weeks.slice(-16), { width, fmtDay, height: width < 520 ? 240 : 280 }),
   pacing: (ctx, width) => pacingChart(pacingRows(ctx), { width, daily: ctx.g.kcalTarget, color: color("calories"), fmtDay }),
   weight: (ctx, width) => {

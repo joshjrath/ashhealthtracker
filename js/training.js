@@ -1,7 +1,9 @@
 /* ──────────────────────────────────────────────────────────────────────────
    Training: your weekly plan, and the lifting you log set by set.
 
-   PLAN — one entry per weekday: "rest", "strength", "cardio" or "any".
+   PLAN — one entry per weekday: "rest", "push", "pull", "legs",
+   "strength", "cardio" or "any". Push, pull and legs are strength days
+   with a focus (a Push/Pull/Legs split); they count as strength.
    A week (Monday → Sunday) is complete when it holds at least as many
    strength days as planned strength days, as many cardio days as planned
    cardio days, and as many workout days overall as planned training days —
@@ -17,8 +19,10 @@
 
 export const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 export const WEEKDAY_LABELS = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
-export const PLAN_TYPES = ["rest", "strength", "cardio", "any"];
-export const PLAN_LABELS = { rest: "Rest", strength: "Strength", cardio: "Cardio", any: "Any workout" };
+export const PLAN_TYPES = ["rest", "push", "pull", "legs", "strength", "cardio", "any"];
+export const PLAN_LABELS = { rest: "Rest", push: "Push", pull: "Pull", legs: "Legs", strength: "Strength", cardio: "Cardio", any: "Any workout" };
+/** Is this planned day a lifting day (plain strength, or a push / pull / legs focus)? */
+export const isLiftDay = (p) => p === "strength" || p === "push" || p === "pull" || p === "legs";
 
 const KG = 2.2046226218;
 const STRENGTH_RE = /strength|weight|functional|core|lift|power/i;
@@ -75,7 +79,7 @@ export function weekStatus(days, plan, monday, today) {
     const p = plannedFor(plan, k);
     if (!p || p === "rest") continue;
     need.total += 1;
-    if (p === "strength") need.strength += 1;
+    if (isLiftDay(p)) need.strength += 1;
     if (p === "cardio") need.cardio += 1;
   }
   const got = { strength: 0, cardio: 0, total: 0 };
