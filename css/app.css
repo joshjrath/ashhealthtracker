@@ -536,6 +536,7 @@ dialog footer .danger { margin-right: auto; }
 .sh p { margin: 0; color: var(--ink3); font-size: 13px; max-width: 640px; }
 .sc h3 { font-family: var(--ui); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink3); font-weight: 700; margin: 22px 0 10px; }
 .sc h3:first-of-type { margin-top: 4px; }
+.sc h3 .sub { text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 500; margin-left: 6px; }
 .srow {
   display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap;
   padding: 14px 0; border-top: 1px solid var(--grid);

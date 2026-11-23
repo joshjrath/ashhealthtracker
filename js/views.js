@@ -1041,6 +1041,18 @@ function goalsSection(ctx) {
       ${num("maintenance", "Estimated maintenance", g.maintenance, 10, "kcal")}
     </div>
     <p class="hint small">Maintenance is context only — the site never treats eating below your range as better, and never suggests making up for a higher day by eating less than your range.</p>
+    <h3>About you <span class="sub">optional — sharpens the energy, body-fat and forecast estimates</span></h3>
+    <div class="fields">
+      <label class="field"><span>Sex</span><span class="inp"><select name="sex">${[["", "Prefer not to say"], ["male", "Male"], ["female", "Female"]].map(([v, l]) => `<option value="${v}"${g.sex === v ? " selected" : ""}>${l}</option>`).join("")}</select></span></label>
+      <label class="field"><span>Birth year</span><span class="inp"><input type="number" name="birthYear" min="1900" max="2100" step="1" inputmode="numeric" value="${g.birthYear || ""}" placeholder="e.g. 1998"></span></label>
+      <label class="field"><span>Height</span><span class="inp"><input type="number" name="heightFt" min="3" max="8" step="1" inputmode="numeric" value="${g.heightIn ? Math.floor(g.heightIn / 12) : ""}" aria-label="Feet"><em>ft</em><input type="number" name="heightInch" min="0" max="11.5" step="0.5" inputmode="decimal" value="${g.heightIn ? Math.round((g.heightIn % 12) * 2) / 2 : ""}" aria-label="Inches"><em>in</em></span></label>
+      <label class="field"><span>Body fat estimate</span><span class="inp"><input type="number" name="bodyFat" min="0" max="70" step="0.5" inputmode="decimal" value="${g.bodyFat || ""}" placeholder="if you know it"><em>%</em></span></label>
+      <label class="field"><span>Target body fat</span><span class="inp"><input type="number" name="targetBodyFat" min="3" max="50" step="0.5" inputmode="decimal" value="${g.targetBodyFat}"><em>%</em></span></label>
+      <label class="field"><span>Pace of loss</span><span class="inp"><select name="targetPace">${[[0, "Automatic — slower as you get leaner"], [0.5, "0.5% of body weight a week"], [0.75, "0.75% a week"], [1, "1% a week (fastest advised)"]].map(([v, l]) => `<option value="${v}"${Number(g.targetPace) === v ? " selected" : ""}>${l}</option>`).join("")}</select></span></label>
+      <label class="field"><span>Aim to get there by</span><span class="inp"><input type="date" name="targetDate" value="${esc(g.targetDate || "")}"></span></label>
+      <label class="field"><span>Measurements in</span><span class="inp"><select name="lengthUnit"><option value="in"${g.lengthUnit !== "cm" ? " selected" : ""}>Inches</option><option value="cm"${g.lengthUnit === "cm" ? " selected" : ""}>Centimeters</option></select></span></label>
+    </div>
+    <p class="hint small">Body fat you log on the Weight page — or a smart scale's reading from Apple Health — takes over from the estimate here. Nothing here is shared; it only feeds the maths.</p>
     <h3>Counted in the daily score</h3>
     <div class="checks">${checks}</div>
     <div class="actions"><button class="btn primary" type="submit">Save goals</button><span class="saved" data-saved hidden>Saved</span></div>

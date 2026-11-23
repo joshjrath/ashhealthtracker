@@ -41,12 +41,17 @@ export const RULES = {
   bed: ["manual"],
   wake: ["manual"],
   creatine: ["manual"],
+  // Apple Health only (a wearable's estimate — shown as one)
+  restingHR: ["apple"],
+  hrv: ["apple"],
   // Apple Health allowed (a value you type for the same day wins)
   steps: ["manual", "apple", "legacy"],
   activeKcal: ["manual", "apple"],
   exerciseMin: ["manual", "apple"],
   // Weight: both, as before — a weigh-in you type wins over the scale's sync that day
   weight: ["manual", "apple", "legacy"],
+  // Body fat: what you enter (with how it was measured) wins over a smart scale's sync
+  bodyFat: ["manual", "apple"],
 };
 
 export const MANUAL_ONLY = Object.keys(RULES).filter((k) => !RULES[k].includes("apple"));
@@ -68,7 +73,10 @@ export function resolveDay(raw, key) {
   const effective = { ...manual };
   for (const n of FOOD_FIELDS) effective[n] = food.totals[n] ?? undefined;
   const bucket = { manual: effective, apple: b.apple || {}, legacy: b.legacy || {} };
-  const d = { src: {}, foods: food.entries, food, lifts: Array.isArray(manual.lifts) ? manual.lifts : [], supps: cleanSupps(manual.supps) || {} };
+  const d = {
+    src: {}, foods: food.entries, food, lifts: Array.isArray(manual.lifts) ? manual.lifts : [], supps: cleanSupps(manual.supps) || {},
+    meas: cleanMeasures(manual.meas) || null, checkin: cleanCheckin(manual.checkin) || null,
+  };
   if (key) d.key = key;
   for (const [field, from] of Object.entries(RULES)) {
     for (const s of from) {
@@ -85,6 +93,9 @@ export function resolveDay(raw, key) {
   if (bucket.manual.workout === true || d.lifts.length) { d.workout = true; d.src.workout = "manual"; }
   else if (d.workout === undefined && bucket.manual.workout === false) { d.workout = false; d.src.workout = "manual"; }
   else if (d.workout === undefined && has(bucket.legacy.workout)) { d.workout = !!bucket.legacy.workout; d.src.workout = "legacy"; }
+  // How a body-fat figure was measured: yours say; a scale's sync is a scale.
+  if (d.src.bodyFat === "manual") d.bodyFatMethod = manual.bodyFatMethod || "other";
+  else if (d.src.bodyFat === "apple") d.bodyFatMethod = "scale";
   // Did the Watch sync fitness for this day? Lets "no workout" count as a miss.
   d.appleFitness = has(bucket.apple.activeKcal) || has(bucket.apple.exerciseMin);
   return d;
@@ -124,12 +135,40 @@ export function bool(v) {
   return undefined;
 }
 
+const pct = (v) => { const n = round1(v); return n !== undefined && n >= 2 && n <= 75 ? n : undefined; };
+const between = (lo, hi, fix = round1) => (v) => { const n = fix(v); return n !== undefined && n >= lo && n <= hi ? n : undefined; };
+export const BF_METHODS = ["dexa", "bodpod", "calipers", "scale", "navy", "visual", "other"];
+const bfMethod = (v) => (BF_METHODS.includes(v) ? v : undefined);
 const MANUAL_FIELDS = {
   weight: round1, kcal: int, protein: int, carbs: int, fat: int, fiber: int,
   steps: int, activeKcal: int, exerciseMin: int,
   bed: clock, wake: clock, workout: bool, creatine: bool, foodDone: bool,
+  bodyFat: pct, bodyFatMethod: bfMethod,
 };
-const APPLE_FIELDS = { weight: round1, steps: int, activeKcal: int, exerciseMin: int, workoutFlag: bool };
+const APPLE_FIELDS = { weight: round1, steps: int, activeKcal: int, exerciseMin: int, workoutFlag: bool, bodyFat: pct, restingHR: between(25, 140), hrv: between(5, 300) };
+
+/** Body measurements, always stored in inches whatever unit they were typed in. */
+export const MEASURES = ["waist", "neck", "chest", "shoulders", "hips", "arm", "thigh"];
+function cleanMeasures(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out = {};
+  for (const k of MEASURES) {
+    const v = round1(raw[k]);
+    if (v !== undefined && v >= 3 && v <= 90) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+/** How you feel, 1–5 each: soreness and fatigue (5 = worst), motivation and energy (5 = best). */
+export const CHECKIN = ["soreness", "fatigue", "motivation", "energy"];
+function cleanCheckin(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out = {};
+  for (const k of CHECKIN) {
+    const v = int(raw[k]);
+    if (v !== undefined && v >= 1 && v <= 5) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 function pick(raw, spec) {
   const out = {};
@@ -227,6 +266,11 @@ export function cleanManual(raw) {
   }
   const supps = cleanSupps(raw?.supps);
   if (supps) d.supps = supps;
+  const meas = cleanMeasures(raw?.meas);
+  if (meas) d.meas = meas;
+  const checkin = cleanCheckin(raw?.checkin);
+  if (checkin) d.checkin = checkin;
+  if (d.bodyFat === undefined) delete d.bodyFatMethod;
   return d;
 }
 

@@ -19,6 +19,7 @@
 import { FOOD_FIELDS } from "./sources.js";
 import { plannedFor } from "./training.js";
 import { DEFAULT_SUPPLEMENTS, suppStatus } from "./supplements.js";
+import { PROFILE_DEFAULTS } from "./profile.js";
 
 /** One colour per metric. Protein/Carbs/Fat are validated as a set (they
     share the composition bar); the rest only ever sit beside a label. */
@@ -61,6 +62,7 @@ export const DEFAULT_GOALS = {
   wakeTarget: "07:00",
   tracked: ["calories", "protein", "fiber", "steps", "active", "exercise", "sleep", "creatine"],
   supplements: DEFAULT_SUPPLEMENTS,
+  ...PROFILE_DEFAULTS, // about you: see profile.js
 };
 
 /** Smallest samples worth reporting. Below these, the page says so instead. */

@@ -68,3 +68,15 @@ test("a placeholder entry keeps its kind and counts like any entry", async () =>
   assert.equal(d.kcal, 950);
   assert.equal(d.protein, 55);
 });
+
+test("measurements, check-ins and body fat are checked; Apple can't send measurements or check-ins", async () => {
+  const { cleanManual: cm, cleanApple: ca, resolveDay: rd } = await import("../js/sources.js");
+  const m = cm({ bodyFat: 14.25, bodyFatMethod: "calipers", meas: { waist: 32.5, neck: "15.5", arm: 1, bogus: 4 }, checkin: { soreness: 4, fatigue: 9, energy: "3" } });
+  assert.deepEqual(m, { bodyFat: 14.3, bodyFatMethod: "calipers", meas: { waist: 32.5, neck: 15.5 }, checkin: { soreness: 4, energy: 3 } });
+  assert.deepEqual(cm({ bodyFatMethod: "dexa" }), {}, "a method without a figure means nothing");
+  assert.deepEqual(ca({ meas: { waist: 30 }, checkin: { energy: 5 }, bodyFat: 18, restingHR: 52, hrv: 61 }), { bodyFat: 18, restingHR: 52, hrv: 61 });
+  const d = rd({ manual: { bodyFat: 15, bodyFatMethod: "dexa", meas: { waist: 32 } }, apple: { bodyFat: 18, restingHR: 52 } }, "2026-10-12");
+  assert.deepEqual([d.bodyFat, d.src.bodyFat, d.bodyFatMethod, d.meas.waist, d.restingHR], [15, "manual", "dexa", 32, 52]);
+  const s = rd({ manual: {}, apple: { bodyFat: 18 } }, "2026-10-12");
+  assert.deepEqual([s.bodyFat, s.bodyFatMethod], [18, "scale"], "a smart scale's reading is labelled as one");
+});

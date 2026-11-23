@@ -1205,6 +1205,10 @@ const FORMS = {
       if (Number.isFinite(v)) next[k] = v;
     }
     if (next.kcalLow > next.kcalHigh) [next.kcalLow, next.kcalHigh] = [next.kcalHigh, next.kcalLow];
+    if (f.elements.heightFt) {
+      const ft = Number(f.elements.heightFt.value) || 0, inch = Number(f.elements.heightInch.value) || 0;
+      next.heightIn = ft || inch ? Math.round((ft * 12 + inch) * 10) / 10 : 0;
+    }
     next.tracked = [...f.querySelectorAll("input[name=tracked]:checked")].map((i) => i.value).filter((id) => GOAL_IDS.includes(id));
     state.goals = next;
     const { plan, ...send } = next;

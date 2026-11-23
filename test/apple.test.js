@@ -28,7 +28,7 @@ const HAE = {
   },
 };
 
-test("Health Auto Export: only fitness, steps, weight and workouts get in", () => {
+test("Health Auto Export: only fitness, steps, weight, heart and workouts get in", () => {
   const { days, report } = parseIngest(HAE);
   assert.deepEqual(days["2026-09-26"], { steps: 9812 });
   const d = days["2026-09-27"];
@@ -41,8 +41,9 @@ test("Health Auto Export: only fitness, steps, weight and workouts get in", () =
     type: "Traditional Strength Training", start: "2026-09-27T17:30", end: "2026-09-27T18:20",
     durationMin: 50, kcal: 318.6, avgHR: 128, maxHR: 161, indoor: true, id: "2026-09-27T17:30|Traditional Strength Training",
   }]);
-  assert.deepEqual(Object.keys(report.ignored).sort(), ["dietary_energy", "protein", "resting_heart_rate", "sleep_analysis"]);
-  assert.deepEqual(Object.keys(report.accepted).sort(), ["active_energy", "apple_exercise_time", "step_count", "weight_body_mass"]);
+  assert.equal(d.restingHR, 58, "resting heart rate comes in for recovery");
+  assert.deepEqual(Object.keys(report.ignored).sort(), ["dietary_energy", "protein", "sleep_analysis"]);
+  assert.deepEqual(Object.keys(report.accepted).sort(), ["active_energy", "apple_exercise_time", "resting_heart_rate", "step_count", "weight_body_mass"]);
   assert.equal(report.workouts, 1);
   assert.equal(report.workoutFields.avgHeartRate, 1);
 });
@@ -75,4 +76,13 @@ test("simple payloads: fitness allowed, food and sleep reported and dropped", ()
 test("timestamps keep the phone's wall clock", () => {
   assert.equal(parseStamp("2026-09-27 06:55:12 -0700").time, "06:55");
   assert.equal(parseStamp("2026-09-27 06:55:12 -0700").ms, Date.parse("2026-09-27T13:55:12Z"));
+});
+
+test("heart rate variability is averaged over the day; body fat keeps the latest reading, as a percentage", () => {
+  const { days } = parseIngest({ data: { metrics: [
+    { name: "heart_rate_variability", units: "ms", data: [{ date: "2026-09-27 03:00:00 -0700", qty: 40 }, { date: "2026-09-27 05:00:00 -0700", qty: 60 }] },
+    { name: "body_fat_percentage", units: "%", data: [{ date: "2026-09-27 07:00:00 -0700", qty: 0.181 }, { date: "2026-09-27 07:05:00 -0700", qty: 0.176 }] },
+    { name: "resting_heart_rate", units: "bpm", data: [{ date: "2026-09-27 00:00:00 -0700", qty: 400 }] },
+  ] } });
+  assert.deepEqual(days["2026-09-27"], { hrv: 50, bodyFat: 17.6 }, "an impossible heart rate is dropped");
 });

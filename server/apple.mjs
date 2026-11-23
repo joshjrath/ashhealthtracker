@@ -54,6 +54,9 @@ const SUMS = {
   exercise_time: "exerciseMin",
 };
 const WEIGHTS = new Set(["weight_body_mass", "body_mass", "weight"]);
+/** Metrics with several readings a day: averaged (heart) or the latest kept (body fat). */
+const AVERAGES = { resting_heart_rate: "restingHR", heart_rate_variability: "hrv", heart_rate_variability_sdnn: "hrv" };
+const LATEST = { body_fat_percentage: "bodyFat", body_fat: "bodyFat" };
 
 const qty = (x) => (typeof x === "number" ? num(x) : x && typeof x === "object" && !Array.isArray(x) ? num(x.qty) : undefined);
 const unitsOf = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x.units : undefined);
@@ -98,12 +101,31 @@ export function fromHealthAutoExport(payload) {
   const sums = {}; // key → field → total
   const weights = {}; // key → { t, v }
   const workouts = {}; // key → [workout]
+  const avgs = {}; // key → field → [values]
+  const latest = {}; // key → field → { t, v }
 
   for (const metric of root?.metrics || []) {
     const name = String(metric?.name || "").toLowerCase();
     const count = Array.isArray(metric?.data) ? metric.data.length : 0;
     const field = SUMS[name];
     const isWeight = WEIGHTS.has(name);
+    const avgField = AVERAGES[name], lastField = LATEST[name];
+    if (avgField || lastField) {
+      report.accepted[name] = (report.accepted[name] || 0) + count;
+      for (const e of metric.data || []) {
+        const st = parseStamp(e.date ?? e.startDate);
+        let v = num(e.qty ?? e.Avg ?? e.avg);
+        if (!st || v === undefined) continue;
+        if (avgField) ((avgs[st.date] ||= {})[avgField] ||= []).push(v);
+        else {
+          if (v > 0 && v <= 1) v *= 100; // some exports send a fraction
+          const t = st.ms ?? 0;
+          const slot = (latest[st.date] ||= {});
+          if (!slot[lastField] || t >= slot[lastField].t) slot[lastField] = { t, v };
+        }
+      }
+      continue;
+    }
     if (!field && !isWeight) {
       report.ignored[name] = (report.ignored[name] || 0) + count;
       continue;
@@ -132,10 +154,12 @@ export function fromHealthAutoExport(payload) {
   }
 
   const days = {};
-  const keys = new Set([...Object.keys(sums), ...Object.keys(weights), ...Object.keys(workouts)]);
+  const keys = new Set([...Object.keys(sums), ...Object.keys(weights), ...Object.keys(workouts), ...Object.keys(avgs), ...Object.keys(latest)]);
   for (const key of keys) {
     if (!KEY_RE.test(key)) continue;
     const d = cleanApple({
+      ...Object.fromEntries(Object.entries(avgs[key] || {}).map(([f, list]) => [f, list.reduce((s, x) => s + x, 0) / list.length])),
+      ...Object.fromEntries(Object.entries(latest[key] || {}).map(([f, x]) => [f, x.v])),
       ...(sums[key] || {}),
       ...(weights[key] ? { weight: weights[key].v } : {}),
       ...(workouts[key] ? { workouts: dedupe(workouts[key]) } : {}),
