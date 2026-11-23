@@ -53,6 +53,12 @@ async function openPg(url) {
       info jsonb not null,
       data bytea not null
     );
+    create table if not exists photos (
+      id text primary key,
+      created_at timestamptz not null default now(),
+      info jsonb not null,
+      data bytea not null
+    );
   `);
 
   const tx = async (fn) => {
@@ -209,6 +215,21 @@ async function openPg(url) {
     async deleteSnapshots(ids) {
       await pool.query("delete from snapshots where id = any($1)", [ids]);
     },
+    // Progress photos: kept apart from your log, so they never ride along in snapshots or exports.
+    async putPhoto(info, data) {
+      await pool.query("insert into photos (id, info, data) values ($1, $2::jsonb, $3)", [info.id, JSON.stringify(info), data]);
+    },
+    async listPhotos() {
+      const r = await pool.query("select info from photos order by created_at");
+      return r.rows.map((x) => x.info);
+    },
+    async getPhoto(id) {
+      const r = await pool.query("select info, data from photos where id = $1", [id]);
+      return r.rows[0] ? { info: r.rows[0].info, data: r.rows[0].data } : null;
+    },
+    async deletePhoto(id) {
+      await pool.query("delete from photos where id = $1", [id]);
+    },
     close: () => pool.end(),
   };
 }
@@ -217,6 +238,7 @@ async function openPg(url) {
 
 async function openFile(file) {
   const snapDir = `${file}.backups`;
+  const photoDir = `${file}.photos`;
   let doc = { days: {}, meta: {}, items: {} };
   try {
     const parsed = JSON.parse(await readFile(file, "utf8"));
@@ -305,6 +327,22 @@ async function openFile(file) {
       await writeIndex((await readIndex()).filter((x) => !drop.has(x.id)));
       for (const id of ids) await rm(join(snapDir, `${id}.json.gz`), { force: true });
     },
+    // Photos sit beside the data file too: an index plus one .jpg each.
+    async putPhoto(info, data) {
+      await mkdir(photoDir, { recursive: true });
+      await writeFile(join(photoDir, `${info.id}.jpg`), data);
+      await writePhotoIndex([...(await readPhotoIndex()), info]);
+    },
+    async listPhotos() { return readPhotoIndex(); },
+    async getPhoto(id) {
+      const info = (await readPhotoIndex()).find((x) => x.id === id);
+      if (!info) return null;
+      return { info, data: await readFile(join(photoDir, `${id}.jpg`)) };
+    },
+    async deletePhoto(id) {
+      await writePhotoIndex((await readPhotoIndex()).filter((x) => x.id !== id));
+      await rm(join(photoDir, `${id}.jpg`), { force: true });
+    },
     close: async () => { await chain; },
   };
 
@@ -315,6 +353,20 @@ async function openFile(file) {
       if (e.code === "ENOENT") return [];
       throw e;
     }
+  }
+  async function readPhotoIndex() {
+    try {
+      return JSON.parse(await readFile(join(photoDir, "index.json"), "utf8"));
+    } catch (e) {
+      if (e.code === "ENOENT") return [];
+      throw e;
+    }
+  }
+  async function writePhotoIndex(index) {
+    await mkdir(photoDir, { recursive: true });
+    const tmp = join(photoDir, "index.json.tmp");
+    await writeFile(tmp, JSON.stringify(index));
+    await rename(tmp, join(photoDir, "index.json"));
   }
   async function writeIndex(index) {
     const tmp = join(snapDir, "index.json.tmp");

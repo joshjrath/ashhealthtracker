@@ -10,12 +10,13 @@
    Every table is a list of rows, the first row its headers, every row the
    same length. Cells are text, numbers, or "" for nothing.
    ────────────────────────────────────────────────────────────────────────── */
-import { resolveDay } from "../js/sources.js";
+import { resolveDay, MEASURES } from "../js/sources.js";
 import { DEFAULT_GOALS, GOAL_IDS, METRICS, sleepMinutes, foodStatus, dayScore } from "../js/metrics.js";
 import { MEALS, fmtQty } from "../js/nutrition.js";
 import { mealTotals } from "../js/library.js";
 import { DEFAULT_SUPPLEMENTS, dueOn, taken, suppLabel, periodsOf, isTaking } from "../js/supplements.js";
 import { MUSCLES } from "../js/liftstats.js";
+import { MEASURE_LABEL, BF_LABEL } from "../js/bodycomp.js";
 
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const SOURCE = { verified: "Verified", database: "Database", estimate: "Estimated (AI)", custom: "Custom", placeholder: "Placeholder" };
@@ -59,6 +60,7 @@ export function sheetTables(doc) {
       (d.workouts || []).map((w) => w.type).join(", "),
       (d.lifts || []).map((l) => l.exercise).join(", "),
       took.join(", "), skipped.join(", "),
+      ...MEASURES.map((m) => d.meas?.[m] ?? ""), d.bodyFat ?? "", d.bodyFat != null ? BF_LABEL[d.bodyFatMethod] || d.bodyFatMethod || "" : "",
     ];
   });
 
@@ -107,7 +109,8 @@ export function sheetTables(doc) {
 
   return {
     Days: table(["Date", "Day", "Goals hit", "Calories", "Protein (g)", "Carbs (g)", "Fat (g)", "Fiber (g)", "Food log", "Diary entries",
-      "Weight (lb)", "Steps", "Active kcal", "Exercise (min)", "Bedtime", "Woke", "Sleep (h)", "Worked out", "Apple workouts", "Lifts", "Supplements taken", "Supplements skipped"], dayRows),
+      "Weight (lb)", "Steps", "Active kcal", "Exercise (min)", "Bedtime", "Woke", "Sleep (h)", "Worked out", "Apple workouts", "Lifts", "Supplements taken", "Supplements skipped",
+      ...MEASURES.map((m) => `${MEASURE_LABEL[m]} (in)`), "Body fat (%)", "Body fat from"], dayRows),
     "Food diary": table(["Date", "Meal", "Time", "Food", "Brand", "Amount", "Calories", "Protein (g)", "Carbs (g)", "Fat (g)", "Fiber (g)", "Numbers from", "From meal", "Notes"], foodRows),
     Lifts: table(["Date", "Exercise", "Set", "Reps", "Weight", "Unit", "Notes"], liftRows),
     Workouts: table(["Date", "Type", "Start", "End", "Minutes", "Calories", "Distance", "Avg HR", "Max HR"], workoutRows),

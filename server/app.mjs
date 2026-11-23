@@ -21,6 +21,10 @@
 
    Food, training and achievements:
      GET  /api/library                session  saved foods, meals, rewards
+     GET  /api/photos                 session  progress photos: dates, poses, sizes (no images)
+     POST /api/photos                 session  { date, pose, data: base64 JPEG } — metadata stripped
+     GET  /api/photos/:id             session  the image (never cached, never public)
+     DELETE /api/photos/:id           session  delete one
      PUT  /api/items/:kind/:id        session  save a food, meal or reward
      DELETE /api/items/:kind/:id      session
      GET  /api/food/search?q=         session  saved + USDA / FatSecret / Open Food Facts (cached)
@@ -63,6 +67,7 @@ import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "
 import { CLEAN, matchFoods } from "../js/library.js";
 import { cleanPlan } from "../js/training.js";
 import { cleanExerciseGroups } from "../js/liftstats.js";
+import { readUpload, MAX_PHOTOS } from "./photos.mjs";
 import { cleanSupplements } from "../js/supplements.js";
 import { cleanProfile, PROFILE_KEYS } from "../js/profile.js";
 import { DEFAULT_CATALOG } from "../js/achievements.js";
@@ -366,7 +371,29 @@ export async function createApp({
         lookup: { usda: k.usdaKey ? "key" : "demo", fatsecret: !!(k.fatsecretId && k.fatsecretSecret), off: k.offEnabled, ai: !!k.anthropicKey },
         backup: { persistent: storage.persistent, where: storage.where, everyHours: bst.everyHours, lastAt: bst.lastAt, count: bst.count, recovery },
         notify: { unread: (await notifier.list()).unread },
+        photos: await store.listPhotos(),
       });
+    }
+    if (path === "/api/photos" && method === "GET") return json(res, 200, { photos: await store.listPhotos() });
+    if (path === "/api/photos" && method === "POST") {
+      const up = readUpload(await readJson(req));
+      if (up.error) return json(res, 400, { error: up.error });
+      if ((await store.listPhotos()).length >= MAX_PHOTOS) return json(res, 409, { error: `You have ${MAX_PHOTOS} photos — delete some first` });
+      await store.putPhoto(up.info, up.data);
+      return json(res, 200, { ok: true, photo: up.info });
+    }
+    const pm = path.match(/^\/api\/photos\/(ph_[\w-]{6,40})$/);
+    if (pm) {
+      if (method === "GET") {
+        const p = await store.getPhoto(pm[1]);
+        if (!p) return json(res, 404, { error: "No such photo" });
+        res.writeHead(200, { ...HEADERS, "content-type": "image/jpeg", "content-length": p.data.length, "cache-control": "private, no-store, max-age=0", "content-disposition": `inline; filename="${p.info.date}-${p.info.pose}.jpg"` });
+        return res.end(p.data);
+      }
+      if (method === "DELETE") {
+        await store.deletePhoto(pm[1]);
+        return json(res, 200, { ok: true });
+      }
     }
     if (path.startsWith("/api/backups")) return backupApi(req, res, method, path);
     if (path.startsWith("/api/notifications") || path.startsWith("/api/push")) return notifyApi(req, res, method, path);

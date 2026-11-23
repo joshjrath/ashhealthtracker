@@ -30,6 +30,9 @@ export const fetchState = () => call("GET", "/api/state");
 export const api = {
   putDay: (key, day) => call("PUT", `/api/days/${key}`, day),
   patchDay: (key, fields) => call("PATCH", `/api/days/${key}`, fields),
+  photos: () => call("GET", "/api/photos"),
+  addPhoto: (photo) => call("POST", "/api/photos", photo),
+  deletePhoto: (id) => call("DELETE", `/api/photos/${encodeURIComponent(id)}`),
   deleteDay: (key) => call("DELETE", `/api/days/${key}`),
   eraseDays: () => call("DELETE", "/api/days"),
   putGoals: (goals) => call("PUT", "/api/goals", goals),

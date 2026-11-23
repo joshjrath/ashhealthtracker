@@ -15,11 +15,13 @@ import {
   workoutsIn, fitnessTotals, workoutStreak, weeklyReview, insights,
   fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
-import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart, strengthIndexChart, liftChart } from "./charts.js";
+import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart, strengthIndexChart, liftChart, bodyFatChart, measureChart } from "./charts.js";
 import { reviewItems } from "./sources.js";
 import { MEALS } from "./nutrition.js";
 import { WEEKDAYS, WEEKDAY_LABELS, PLAN_TYPES, PLAN_LABELS } from "./training.js";
 import { preservationCard, overloadCard, volumeCard, strengthOf, chosenLift } from "./strengthview.js";
+import { bodyCompCard, measurementsCard, photosCard, bodyOf, chosenMeasure } from "./bodyview.js";
+import { measureSeries, weightAt, MEASURE_LABEL, BF_LABEL } from "./bodycomp.js";
 import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
@@ -1504,7 +1506,11 @@ export const PAGES = {
     render: (ctx) => `${pageHeader(ctx, "Weight", false)}${demoBanner(ctx)}
       ${weightJourney(ctx)}
       <div class="grid wide-right">${goalJourney(ctx)}${weeklyWeightCard(ctx)}</div>
-      ${metabolismCard(ctx)}`,
+      ${metabolismCard(ctx)}
+      <div class="pagesec" id="sec-body"><h2 class="pagesec-h">Body composition</h2></div>
+      ${bodyCompCard(ctx)}
+      ${measurementsCard(ctx)}
+      ${photosCard(ctx)}`,
   },
   nutrition: {
     title: "Nutrition",
@@ -1562,6 +1568,17 @@ export const foodDay = (ctx) => (ctx.ui.foodDay && ctx.ui.foodDay <= ctx.today ?
 /* ── measured charts ───────────────────────────────────────────────────── */
 
 export const CHARTS = {
+  bodyfat: (ctx, width) => {
+    const b = bodyOf(ctx);
+    return bodyFatChart(b.readings.filter((r) => r.key >= addDays(ctx.today, -365)), b.bf, { width, fmtDay, today: ctx.today, labels: BF_LABEL, height: width < 520 ? 210 : 230 });
+  },
+  measure: (ctx, width) => {
+    const m = chosenMeasure(ctx);
+    const series = measureSeries(ctx.days, m, ctx.today);
+    const from = series[0]?.key || ctx.today;
+    const weights = range(from, ctx.today).filter((k) => ctx.days[k]?.weight != null).map((k) => ({ key: k, v: weightAt(ctx.days, k) }));
+    return measureChart(series, weights, { width, fmtDay, today: ctx.today, unit: ctx.g.lengthUnit === "cm" ? "cm" : "in", label: MEASURE_LABEL[m], height: width < 520 ? 210 : 230 });
+  },
   sindex: (ctx, width) => {
     const rows = strengthOf(ctx).index;
     const bw = rows.map((w) => { const v = range(w.monday, w.end).map((k) => ctx.days[k]?.weight).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; });

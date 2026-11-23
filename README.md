@@ -15,7 +15,7 @@ npm test         # calculations, Apple Health parsing, and the server's auth and
 | Page | What it shows |
 |---|---|
 | **Today** | Goals hit as *5/8* (percentage second) with a **Finish today** list of what's left per goal · **Next unlock** (the one achievement realistically closest, with its reward) · **supplements** checked off one by one · stat cards · calorie ring with the success zone · macros · today vs your 14-day average · week grid (hit / missed / no data / in progress) · streaks · **this week** review (biggest win, biggest gap, change vs last week) · **consistency** (last 7 / 30 / previous 30 days) · **insights** once there's enough history · goal journey · weekly weight |
-| **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one · **Metabolism & energy balance**: adaptive maintenance estimate with its range and confidence, intake from complete days, deficit, a suggested calorie target you can accept or decline, plateau check |
+| **Weight** | Daily weigh-ins with the 7-day average as the main line · 7-day average, 30-day change, lb/week and trend · an estimated goal date, only once the data supports one · **Metabolism & energy balance**: adaptive maintenance estimate with its range and confidence, intake from complete days, deficit, a suggested calorie target you can accept or decline, plateau check · **Body composition**: body fat with its likely range and how it was arrived at (DEXA, Bod Pod, calipers, smart scale, Navy tape estimate…), fat and fat-free mass, waist-to-height, progress toward your target with timelines to 15 / 12 / 10%, what waist, weight and strength say together, milestones · **Measurements** (waist, neck, chest, shoulders, hips, arm, thigh; inches or cm) against weight · **Progress photos**, private, front / side / back, side by side or with a before/after slider |
 | **Nutrition** | The **food diary** (breakfast / lunch / dinner / snacks, fast search-or-describe entry, every entry editable, and **placeholders** — just the macros, for eating out) · daily summary as *current / target — remaining* · **weekly calories** (weekly target, logged, target remaining, average available per remaining day, pacing chart) · trends from **complete** food days · food history meal by meal · **My foods** (recent, favorites, frequent, custom, meals) |
 | **Fitness** | Active calories / exercise / steps rings · this week's workouts, minutes and calories · **Strength**: the week against your training plan, sets you log (or **repeat a past session** and adjust it), volume and new bests · a week view of workouts as blocks by time of day · exercise per week · workout mix · six months of activity · recent workouts · **Strength & muscle preservation** (status, strength index vs body weight, protein, what to watch) · **Progressive overload** (per lift: est. 1-rep max, six-week trend, ready to add weight / build reps / stalled) · **Training volume & recovery** (sets a week per muscle group, the past seven days as Push / Pull / Legs, rest days, sleep) |
 | **Sleep** | Bedtime → wake bars from your own logs, with your target window behind them, and average bedtime, wake, spread and nights on schedule |
@@ -82,6 +82,10 @@ To put everything back: in the sheet, **Ash Health → Restore a backup to the w
 
 `npm test` includes a check that restarting the server on the same storage — which is what an update does — leaves every day, food, meal, reward and setting exactly as it was.
 
+## Progress photos
+
+Photos are shrunk to 1600 px and re-encoded in the browser, then the server checks each is a JPEG and strips every metadata segment (EXIF, including any GPS location, XMP, comments) before storing it in the database's `photos` table (or beside the data file locally). An image is only ever sent to a signed-in browser, with `Cache-Control: no-store`; there's no public link, and backup links can't reach photos. They're deliberately left out of the automatic snapshots, the Google Sheet copy and JSON exports (they'd make each one many megabytes) — so on Railway they're as durable as the Postgres database itself, and the way to keep a copy elsewhere is to save them one by one. They aren't encrypted separately from the rest of the database.
+
 ## Notifications
 
 One service (`server/notify.mjs`) handles every notification; features and the rules in `server/notify-rules.mjs` report through `emit({ type, category, priority, key, fp, … })`. It dedupes (same key + same content = nothing new), applies cooldowns and minimum gaps, keeps one live notification per key, holds digest topics and anything past your daily limit for a daily/weekly digest, skips reminders in quiet hours, and removes reminders that no longer apply (log a meal and "log your meals" disappears). Rules run every five minutes and shortly after anything is logged, in your time zone (sent by your browser). On first run, anything already true (old PRs, milestones passed long ago) is recorded silently.
@@ -124,6 +128,9 @@ js/energy.js      adaptive TDEE, weight trend, plateaus, calorie advice
 js/energyview.js  the Weight page's Metabolism & energy balance card
 js/liftstats.js   strength analysis: muscle groups, e1RM trends, double progression, index, weekly volume
 js/strengthview.js the Fitness page's strength preservation, overload and volume cards
+js/bodycomp.js    body fat from every reading with its error, fat / fat-free mass, tape changes vs noise, timelines
+js/bodyview.js    the Weight page's body composition, measurements and progress photo cards and forms
+server/photos.mjs progress photo checks and metadata stripping
 js/profile.js     about you: resting energy and body-fat formulas
 server/db.mjs     Postgres storage (days, meta, items, snapshots), or a JSON file without a DATABASE_URL
 server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit

@@ -641,3 +641,68 @@ export function liftChart(ex, { width, height = 240, fmtDay, since }) {
     ${grid}${xl}<path class="lt-line" d="${line}"/>${tl}${pts}
   </svg>`;
 }
+
+const dnum = (k) => { const [y, m, d] = k.split("-").map(Number); return Math.round(Date.UTC(y, m - 1, d) / 864e5); };
+
+/**
+ * Body-fat readings over time, each with its method's typical error as a
+ * whisker (measured and estimated in different colours), and today's
+ * combined estimate as a band at the right edge.
+ */
+export function bodyFatChart(readings, now, { width, height = 230, fmtDay, today, labels = {} }) {
+  const P = { l: 40, r: 18, t: 14, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  if (!readings.length) return "";
+  const x0 = dnum(readings[0].key), x1 = Math.max(x0 + 14, dnum(today));
+  const vals = readings.flatMap((r) => [r.pct - r.err, r.pct + r.err]).concat(now ? [now.low, now.high] : []);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const step = niceStep(hi - lo || 4, 4);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const x = (k) => P.l + ((dnum(k) - x0) / (x1 - x0)) * (iw - 14);
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${+v.toFixed(1)}%</text>`;
+  const ticks = [readings[0].key, today];
+  const xl = ticks.map((k, i) => `<text class="axis" x="${(i ? W - P.r : x(k)).toFixed(1)}" y="${height - 8}" text-anchor="${i ? "end" : "start"}">${esc(fmtDay(k, true))}</text>`).join("");
+  const pts = readings.map((r) => {
+    const cx = x(r.key).toFixed(1);
+    return `<g class="hit" ${tip(fmtDay(r.key), `${r.pct.toFixed(1)}% ± ${r.err}`, labels[r.method] || r.method, r.kind === "measured" ? "Measured" : "Estimate")}>
+      <line class="bf-whisk ${r.kind === "measured" ? "m" : "e"}" x1="${cx}" x2="${cx}" y1="${y(r.pct + r.err).toFixed(1)}" y2="${y(r.pct - r.err).toFixed(1)}"/>
+      <circle cx="${cx}" cy="${y(r.pct).toFixed(1)}" r="10" fill="transparent"/>
+      <circle class="bf-pt ${r.kind === "measured" ? "m" : "e"}" cx="${cx}" cy="${y(r.pct).toFixed(1)}" r="4"/></g>`;
+  }).join("");
+  const band = now ? `<g class="hit" ${tip("Today's estimate", `${now.pct.toFixed(1)}%`, `likely ${now.low.toFixed(1)}–${now.high.toFixed(1)}%`)}>
+      <rect class="bf-band" x="${(W - P.r - 12).toFixed(1)}" y="${y(now.high).toFixed(1)}" width="12" height="${Math.max(2, y(now.low) - y(now.high)).toFixed(1)}" rx="4"/>
+      <line class="bf-nowl" x1="${(W - P.r - 14).toFixed(1)}" x2="${(W - P.r + 2).toFixed(1)}" y1="${y(now.pct).toFixed(1)}" y2="${y(now.pct).toFixed(1)}"/></g>` : "";
+  return `<svg class="plot bodyfat" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Body-fat readings over time with their typical error, and today's estimate">${grid}${xl}${pts}${band}</svg>`;
+}
+
+/** One tape measurement over time (dots and line), with the 7-day average weight dashed on the right axis. */
+export function measureChart(series, weights, { width, height = 230, fmtDay, unit = "in", label = "", today }) {
+  const P = { l: 46, r: 52, t: 14, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  if (series.length < 1) return `<div class="nodata">No ${esc(label.toLowerCase())} measurements yet.</div>`;
+  const k = unit === "cm" ? 2.54 : 1;
+  const S = series.map((s) => ({ ...s, v: s.v * k }));
+  const x0 = dnum(S[0].key), x1 = Math.max(x0 + 14, dnum(today));
+  let lo = Math.min(...S.map((s) => s.v)), hi = Math.max(...S.map((s) => s.v));
+  const pad = Math.max(unit === "cm" ? 1.5 : 0.6, (hi - lo) * 0.2);
+  const step = niceStep(hi - lo + 2 * pad, 4);
+  lo = Math.floor((lo - pad) / step) * step; hi = Math.ceil((hi + pad) / step) * step;
+  const Wt = weights.filter((w) => dnum(w.key) >= x0);
+  let wlo = Math.min(...Wt.map((w) => w.v)), whi = Math.max(...Wt.map((w) => w.v));
+  if (Wt.length) { const p2 = Math.max(1, (whi - wlo) * 0.2); wlo = Math.floor(wlo - p2); whi = Math.ceil(whi + p2); }
+  const x = (key) => P.l + ((dnum(key) - x0) / (x1 - x0)) * iw;
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  const yw = (v) => P.t + ((whi - v) / (whi - wlo || 1)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${(Math.round(v * 10) / 10).toString()}</text>`;
+  if (Wt.length) for (const v of [wlo, (wlo + whi) / 2, whi]) grid += `<text class="axis" x="${W - P.r + 8}" y="${(yw(v) + 4).toFixed(1)}">${Math.round(v)} lb</text>`;
+  const xl = [S[0].key, today].map((key, i) => `<text class="axis" x="${(i ? W - P.r : P.l).toFixed(1)}" y="${height - 8}" text-anchor="${i ? "end" : "start"}">${esc(fmtDay(key, true))}</text>`).join("");
+  const wl = Wt.map((w, i) => `${i ? "L" : "M"}${x(w.key).toFixed(1)},${yw(w.v).toFixed(1)}`).join("");
+  const line = S.map((s, i) => `${i ? "L" : "M"}${x(s.key).toFixed(1)},${y(s.v).toFixed(1)}`).join("");
+  const dots = S.map((s) => `<g class="hit" ${tip(fmtDay(s.key), `${label} ${s.v.toFixed(1)} ${unit}`)}><circle cx="${x(s.key).toFixed(1)}" cy="${y(s.v).toFixed(1)}" r="10" fill="transparent"/><circle class="ms-pt" cx="${x(s.key).toFixed(1)}" cy="${y(s.v).toFixed(1)}" r="4"/></g>`).join("");
+  return `<svg class="plot measure" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="${esc(label)} over time in ${unit}, with weight">${grid}${xl}${wl ? `<path class="ewline" d="${wl}"/>` : ""}${S.length > 1 ? `<path class="ms-line" d="${line}"/>` : ""}${dots}</svg>`;
+}

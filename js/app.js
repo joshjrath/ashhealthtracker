@@ -20,6 +20,9 @@ import { dayLabel } from "./diary.js";
 import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, openPlaceholder, closeSheet } from "./foodsheet.js";
 import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
 import { readNotifyForm, keyBytes } from "./notifyview.js";
+import { measureForm, photoForm, navyText, lastPhotoOf, photoSrc, ghostLabel } from "./bodyview.js";
+import { navyBodyFat } from "./profile.js";
+import { MEASURES } from "./sources.js";
 import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, pausedSupps, pauseSupp, resumeSupp, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
 
 /*
@@ -588,6 +591,34 @@ const ACTS = {
     commit(() => api.putGoals(send)).then(() => toast(`Calorie target set to ${t.toLocaleString("en-US")} kcal`));
     return false;
   },
+  /* body composition */
+  "meas-open": (el) => { openMeasure(el.dataset.key); return false; },
+  "meas-pick": (el) => { ui.measure = el.dataset.v; },
+  "meas-unit": () => { saveUnit(state.goals.lengthUnit === "cm" ? "in" : "cm"); return false; },
+  "meas-clear": () => {
+    const key = panel.key;
+    if (!confirm(`Clear the measurements and body-fat reading logged on ${fmtDay(key)}?`)) return false;
+    closePanel();
+    saveBody(key, { meas: null, bodyFat: null, bodyFatMethod: null });
+    return false;
+  },
+  "bf-del": (el) => {
+    const key = el.dataset.key;
+    if (!confirm(`Delete the body-fat reading from ${fmtDay(key)}?`)) return false;
+    saveBody(key, { bodyFat: null, bodyFatMethod: null });
+    return false;
+  },
+  "photo-open": () => { photoDraft = { date: keyOf(new Date()), pose: ui.photoPose || "front" }; openPanel({ kind: "photo" }); return false; },
+  "photo-pose": (el) => { ui.photoPose = el.dataset.v; ui.photoA = ui.photoB = null; },
+  "photo-mode": (el) => { ui.photoMode = el.dataset.v; },
+  "photo-del": (el) => {
+    if (!confirm("Delete this photo? It can't be undone.")) return false;
+    const id = el.dataset.v;
+    state.photos = (state.photos || []).filter((p) => p.id !== id);
+    render();
+    api.deletePhoto(id).catch(failed);
+    return false;
+  },
   /* strength */
   liftex: (el) => { ui.liftEx = el.dataset.v; },
   "lift-all": () => { ui.liftAll = !ui.liftAll; },
@@ -1079,13 +1110,15 @@ function panelHtml() {
     case "badge": return badgeDetail(c, panel.id);
     case "reward": return rewardForm(c, panel.id ? state.library.rewards.find((r) => r.id === panel.id) : null, panel.ach);
     case "lifts": return liftForm(c, liftDraft);
+    case "measure": return measureForm(c, panel.key);
+    case "photo": return photoForm(c, photoDraft);
     default: return "";
   }
 }
 function openPanel(p) {
   panel = p;
   panelBody.innerHTML = panelHtml();
-  paneldlg.classList.toggle("wide", p.kind === "lifts" || p.kind === "next");
+  paneldlg.classList.toggle("wide", p.kind === "lifts" || p.kind === "next" || p.kind === "measure" || p.kind === "photo");
   if (!paneldlg.open) paneldlg.showModal();
   const first = panelBody.querySelector("[data-focus]") || panelBody.querySelector("input:not([type=hidden]), select");
   if (first && matchMedia("(pointer: fine)").matches && p.kind !== "badge") first.focus();
@@ -1121,6 +1154,116 @@ paneldlg.addEventListener("submit", (e) => {
   if (!f || !FORMS[f.dataset.form]) return;
   e.preventDefault();
   FORMS[f.dataset.form](f);
+});
+
+/* ── body composition ──────────────────────────────────────────────────── */
+
+let photoDraft = null; // { date, pose } for the add-photo form
+function openMeasure(key) {
+  const today = keyOf(new Date());
+  if (!key || key > today) key = today;
+  if (daydlg.open) daydlg.close();
+  openPanel({ kind: "measure", key });
+}
+/** Measurements typed in the form, in inches (what's stored). */
+function readMeas(f) {
+  const k = f.dataset.unit === "cm" ? 1 / 2.54 : 1;
+  const out = {};
+  for (const m of MEASURES) {
+    const el = f.elements[`m-${m}`];
+    const v = Number(el?.value);
+    if (el && el.value.trim() !== "" && v > 0) out[m] = Math.round(v * k * 10) / 10;
+  }
+  return out;
+}
+/** Change some of a day's body fields here and on the server (null clears one). */
+function saveBody(key, fields) {
+  leaveDemo();
+  const manual = { ...(state.raw[key]?.manual || {}) };
+  for (const [k, v] of Object.entries(fields)) { if (v == null) delete manual[k]; else manual[k] = v; }
+  setDay(key, manual);
+  commit(() => api.patchDay(key, fields));
+}
+function saveUnit(unit) {
+  state.goals = { ...state.goals, lengthUnit: unit };
+  const { plan, ...send } = state.goals;
+  commit(() => api.putGoals(send));
+}
+/** Shrink to `max` px on the long side and re-encode as JPEG — which also drops the photo's metadata. */
+async function shrinkPhoto(file, max) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); } catch { throw new Error("this browser can't open that image type — try a JPEG or PNG"); }
+  const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+  if (!blob) throw new Error("couldn't prepare the photo");
+  const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = () => rej(new Error("couldn't read the photo")); r.readAsDataURL(blob); });
+  return { data, width: w, height: h };
+}
+function navyHint(f) {
+  const g = state.goals;
+  const v = g.sex && g.heightIn > 0 ? navyBodyFat(g.sex, g.heightIn, readMeas(f)) : null;
+  const el = f.querySelector("[data-navy]");
+  if (el) el.innerHTML = navyText(g, v);
+}
+paneldlg.addEventListener("input", (e) => {
+  if (panel?.kind === "measure" && e.target.name?.startsWith("m-")) navyHint(e.target.form);
+  if (panel?.kind === "photo" && e.target.matches("[data-ghost-op]")) {
+    const gh = panelBody.querySelector("[data-ghost]");
+    if (gh) gh.style.opacity = String(Number(e.target.value) / 100);
+  }
+});
+paneldlg.addEventListener("change", (e) => {
+  if (panel?.kind === "measure" && e.target.matches("[data-meas-day]") && e.target.value) {
+    const today = keyOf(new Date());
+    panel.key = e.target.value > today ? today : e.target.value;
+    redrawPanel();
+  }
+  if (panel?.kind === "measure" && e.target.matches("[data-meas-unit]")) {
+    // keep what's typed: carry it over in inches, switch the unit, redraw, refill
+    const f = e.target.form, typed = readMeas(f), bf = f.elements.bodyFat.value, method = f.elements.bodyFatMethod.value;
+    const unit = e.target.value;
+    saveUnit(unit);
+    redrawPanel();
+    const nf = panelBody.querySelector("form[data-form=measure]");
+    for (const [m, v] of Object.entries(typed)) nf.elements[`m-${m}`].value = (unit === "cm" ? v * 2.54 : v).toFixed(1);
+    nf.elements.bodyFat.value = bf; nf.elements.bodyFatMethod.value = method;
+    navyHint(nf);
+  }
+  if (panel?.kind === "photo" && e.target.matches("[data-photo-file]")) {
+    const file = e.target.files[0];
+    const box = panelBody.querySelector("[data-photo-prev]");
+    if (!file || !box) return;
+    const img = box.querySelector("[data-prev]");
+    if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(file);
+    box.hidden = false;
+  }
+  if (panel?.kind === "photo" && e.target.matches("[data-photo-pose]")) {
+    photoDraft.pose = e.target.value;
+    const ghost = lastPhotoOf(state.photos, photoDraft.pose);
+    const gh = panelBody.querySelector("[data-ghost]"), op = panelBody.querySelector("[data-ghost-op]"), l = panelBody.querySelector("[data-ghost-l]");
+    if (gh) { gh.hidden = !ghost; if (ghost) gh.src = photoSrc(ghost); }
+    if (op) op.hidden = !ghost;
+    if (l) l.textContent = ghostLabel(ghost, photoDraft.pose);
+  }
+});
+view.addEventListener("change", (e) => {
+  const p = e.target.dataset?.photo;
+  if (!p || p === "x") return;
+  if (p === "A") ui.photoA = e.target.value;
+  else if (p === "B") ui.photoB = e.target.value;
+  else if (p === "grid") ui.photoGrid = e.target.checked;
+  render();
+});
+view.addEventListener("input", (e) => {
+  if (e.target.dataset?.photo !== "x") return;
+  ui.photoX = Number(e.target.value);
+  e.target.closest(".pslider")?.style.setProperty("--x", `${ui.photoX}%`);
 });
 
 /* ── lifting ───────────────────────────────────────────────────────────── */
@@ -1178,17 +1321,17 @@ paneldlg.addEventListener("input", (e) => {
   if (box) box.innerHTML = lastTimeHtml(state.days, liftDraft, Number(m[1]));
 });
 paneldlg.addEventListener("keydown", (e) => {
-  if (e.target.name !== "day" || !liftDraft) return;
+  if (e.target.name !== "day" || !liftDraft || panel?.kind !== "lifts") return;
   dayTypedAt = Date.now();
   if (e.key === "Enter") { e.preventDefault(); syncLifts(); liftDay(e.target.value); }
 });
 paneldlg.addEventListener("change", (e) => {
-  if (e.target.name !== "day" || !liftDraft || Date.now() - dayTypedAt < 400) return;
+  if (e.target.name !== "day" || !liftDraft || panel?.kind !== "lifts" || Date.now() - dayTypedAt < 400) return;
   syncLifts();
   liftDay(e.target.value);
 });
 paneldlg.addEventListener("focusout", (e) => {
-  if (e.target.name !== "day" || !liftDraft || !e.target.isConnected || e.target.value === liftDraft.key) return;
+  if (e.target.name !== "day" || !liftDraft || panel?.kind !== "lifts" || !e.target.isConnected || e.target.value === liftDraft.key) return;
   syncLifts();
   liftDay(e.target.value);
 });
@@ -1318,6 +1461,36 @@ const FORMS = {
       }
     }
     saveSupplements(list);
+  },
+  measure(f) {
+    const key = f.dataset.key, unit = f.elements.unit.value;
+    const meas = readMeas(f);
+    const bfv = f.elements.bodyFat.value.trim();
+    const bodyFat = bfv === "" ? null : Number(bfv);
+    if (bodyFat != null && !(bodyFat >= 2 && bodyFat <= 75)) { alert("Body fat should be between 2 and 75%."); return; }
+    if (unit !== (state.goals.lengthUnit === "cm" ? "cm" : "in")) saveUnit(unit);
+    closePanel();
+    saveBody(key, { meas: Object.keys(meas).length ? meas : null, bodyFat, bodyFatMethod: bodyFat == null ? null : f.elements.bodyFatMethod.value });
+    toast(`Saved for ${fmtDay(key)}`);
+  },
+  async photo(f) {
+    const file = f.elements.file.files[0];
+    if (!file) return;
+    const btn = f.querySelector("[data-photo-save]"), err = f.querySelector("[data-photo-err]");
+    btn.disabled = true; btn.textContent = "Saving…"; err.hidden = true;
+    try {
+      const { data, width, height } = await shrinkPhoto(file, 1600);
+      leaveDemo();
+      const r = await api.addPhoto({ date: f.elements.date.value, pose: f.elements.pose.value, data, width, height });
+      state.photos = [...(state.photos || []), r.photo];
+      ui.photoPose = r.photo.pose; ui.photoB = r.photo.date;
+      closePanel();
+      render();
+      toast("Photo saved");
+    } catch (e) {
+      err.textContent = `Couldn't save it: ${e.message}`;
+      err.hidden = false; btn.disabled = false; btn.textContent = "Save photo";
+    }
   },
   exgroups(f) {
     const groups = { ...(state.goals.exerciseGroups || {}) };
