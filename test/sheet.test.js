@@ -185,12 +185,12 @@ test("the sheet's script: setup turns on a nightly run, writes every tab, keeps 
   // nine more nights → only the newest 7 kept
   const copy = JSON.parse(sheetCopy);
   for (let d = 1; d <= 9; d += 1) {
-    const night = JSON.stringify({ ...copy, takenAt: `2026-11-0${d}T03:00:00.000Z` });
+    const night = JSON.stringify({ ...copy, takenAt: `2099-01-0${d}T03:00:00.000Z` }); // after the real first copy, whatever today is
     g.env.UrlFetchApp.fetch = () => ({ getResponseCode: () => 200, getContentText: () => night });
     load(script, g.env).backupNow();
   }
   const kept = g.sheets.filter((s) => s.name.startsWith("Backup ")).map((s) => s.name).sort();
-  assert.deepEqual(kept, ["03", "04", "05", "06", "07", "08", "09"].map((d) => `Backup 2026-11-${d}`));
+  assert.deepEqual(kept, ["03", "04", "05", "06", "07", "08", "09"].map((d) => `Backup 2099-01-${d}`));
 });
 
 test("Restore from the sheet: wrong password refused; right one brings everything back to an empty site and re-links the sheet", async () => {

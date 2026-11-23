@@ -23,7 +23,7 @@ import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
 import { nextUnlockCard, achievementsPage } from "./trophies.js";
 import { strengthCard, setsText } from "./strength.js";
-import { DEFAULT_SUPPLEMENTS, currentSupps, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
+import { DEFAULT_SUPPLEMENTS, currentSupps, pausedSupps, pausedOn, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
 import { sheetScript, sheetManifest } from "./sheetscript.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -993,7 +993,10 @@ function overview(ctx) {
     ["sources", "Food & sleep manual only"],
     ["food", fl ? `USDA ${fl.usda.set ? "key" : "demo key"}${fl.fatsecretId.set ? " · FatSecret" : ""}${fl.offEnabled ? " · Open Food Facts" : ""} · AI ${fl.anthropic.set ? "on" : "off"}` : ""],
     ["training", plan ? `${count("strength")} strength · ${count("cardio")} cardio · ${count("any")} any · ${count("rest")} rest` : "No plan yet"],
-    ["supplements", (() => { const l = currentSupps(g.supplements || DEFAULT_SUPPLEMENTS); return l.length ? l.map((s) => s.name).join(" · ") : "None"; })()],
+    ["supplements", (() => {
+      const all = g.supplements || DEFAULT_SUPPLEMENTS, l = currentSupps(all), p = pausedSupps(all).length;
+      return [l.length ? l.map((s) => s.name).join(" · ") : "None right now", p ? `${p} paused` : ""].filter(Boolean).join(" · ");
+    })()],
     ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
@@ -1167,24 +1170,34 @@ function reviewSection(ctx) {
 }
 
 function supplementsSection(ctx) {
-  const list = currentSupps(ctx.g.supplements || DEFAULT_SUPPLEMENTS);
-  const gone = (ctx.g.supplements || []).length - list.length;
+  const all = ctx.g.supplements || DEFAULT_SUPPLEMENTS;
+  const taking = currentSupps(all), paused = pausedSupps(all);
   const rowOf = (s) => `<div class="supprow">
       <span class="inp"><input name="sn-${s.id}" value="${esc(s.name)}" maxlength="40" required aria-label="Name"></span>
       <span class="inp"><input name="sd-${s.id}" value="${esc(s.dose || "")}" maxlength="30" placeholder="Dose (optional)" aria-label="Dose"></span>
-      <button type="button" class="ib" data-act="supp-remove" data-v="${s.id}" title="Remove ${esc(s.name)}" aria-label="Remove ${esc(s.name)}">×</button>
+      <button type="button" class="btn" data-act="supp-pause" data-v="${s.id}" ${tip(`Pause ${s.name}`, "Not taking it for now: it leaves Today and Log a day and stops counting toward the goal. Its history stays.")}>Pause</button>
     </div>`;
+  const pausedRow = (s) => {
+    const on = pausedOn(s);
+    return `<div class="supprow paused">
+      <span class="pz"><b>${esc(s.name)}</b>${s.dose ? `<span> · ${esc(s.dose)}</span>` : ""}<em>${on ? `Paused since ${esc(fmtDay(on, true))}` : "Paused"}</em></span>
+      <button type="button" class="btn" data-act="supp-resume" data-v="${s.id}">Resume</button>
+      <button type="button" class="ib" data-act="supp-delete" data-v="${s.id}" title="Delete ${esc(s.name)} for good" aria-label="Delete ${esc(s.name)} for good">×</button>
+    </div>`;
+  };
   return `<form class="card sc" id="sec-supplements" data-form="supplements">
-    ${secHead("supplements", "What you take each day. Every one gets its own check-off on Today and in Log a day, and the Supplements goal is hit once you've taken everything on the list.")}
-    <div class="supplist">${list.map(rowOf).join("") || `<div class="empty-row">No supplements yet — the Supplements goal is left out of your score until you add one.</div>`}
+    ${secHead("supplements", "What you take. Each one you're taking gets its own check-off on Today and in Log a day, and the Supplements goal is hit once you've taken all of them.")}
+    <h3>Taking now</h3>
+    <div class="supplist">${taking.map(rowOf).join("") || `<div class="empty-row">Nothing right now — the Supplements goal is left out of your score until you're taking something.</div>`}
       <div class="supprow add">
         <span class="inp"><input name="sn-new" maxlength="40" placeholder="Add a supplement" aria-label="New supplement"></span>
         <span class="inp"><input name="sd-new" maxlength="30" placeholder="Dose" aria-label="New supplement dose"></span>
-        <span></span>
+        <button type="submit" class="btn">Add</button>
       </div>
     </div>
-    <p class="hint small">A supplement counts toward the goal from the day you add it, and stops counting the day you remove it — so changing the list never rewrites past days.${gone ? ` ${gone} removed supplement${gone === 1 ? " stays" : "s stay"} in the days you logged ${gone === 1 ? "it" : "them"}.` : ""}</p>
-    <div class="actions"><button class="btn primary" type="submit">Save supplements</button><span class="saved" data-saved hidden></span></div>
+    ${paused.length ? `<h3>Paused</h3><div class="supplist">${paused.map(pausedRow).join("")}</div>` : ""}
+    <p class="hint small"><b>Pause</b> one you've stopped for a while: it leaves Today and the log and doesn't count as missed, and <b>Resume</b> picks it back up with its history intact. A supplement counts only while you're taking it — from the day you add or resume it — so changing the list never rewrites past days.</p>
+    <div class="actions"><button class="btn primary" type="submit">Save changes</button><span class="saved" data-saved hidden></span></div>
   </form>`;
 }
 

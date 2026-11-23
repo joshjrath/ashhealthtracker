@@ -14,7 +14,7 @@ import { resolveDay } from "../js/sources.js";
 import { DEFAULT_GOALS, GOAL_IDS, METRICS, sleepMinutes, foodStatus, dayScore } from "../js/metrics.js";
 import { MEALS, fmtQty } from "../js/nutrition.js";
 import { mealTotals } from "../js/library.js";
-import { DEFAULT_SUPPLEMENTS, dueOn, taken, suppLabel } from "../js/supplements.js";
+import { DEFAULT_SUPPLEMENTS, dueOn, taken, suppLabel, periodsOf, isTaking } from "../js/supplements.js";
 
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const SOURCE = { verified: "Verified", database: "Database", estimate: "Estimated (AI)", custom: "Custom", placeholder: "Placeholder" };
@@ -96,7 +96,7 @@ export function sheetTables(doc) {
     ...Object.keys(DEFAULT_GOALS).filter((k) => !["tracked", "supplements"].includes(k)).map((k) => ["", k, g[k]]),
     ["", "Counted in the daily score", (g.tracked || []).filter((id) => GOAL_IDS.includes(id)).map((id) => METRICS[id].label).join(", ")],
     ["Supplements", "", ""],
-    ...supps.map((s) => ["", suppLabel(s), [s.since ? `from ${s.since}` : "", s.until ? `removed ${s.until}` : ""].filter(Boolean).join(" · ") || "every day"]),
+    ...supps.map((s) => ["", suppLabel(s), `${isTaking(s) ? "Taking" : "Paused"} · ${periodsOf(s).map((p) => `${p.from || "from the start"} → ${p.to || "now"}`).join(", ") || "never started"}`]),
     ["Training plan", "", ""],
     ...(doc.plan ? Object.entries(doc.plan.days || {}).map(([d, t]) => ["", d, PLAN[t] || t]) : [["", "No plan set", ""]]),
     ["Rewards", "", ""],

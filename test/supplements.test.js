@@ -9,7 +9,7 @@ import { openStore } from "../server/db.mjs";
 import { createApp } from "../server/app.mjs";
 import { resolveDay, cleanManual } from "../js/sources.js";
 import { goalStatus, dayScore, DEFAULT_GOALS } from "../js/metrics.js";
-import { cleanSupplements, suppStatus, suppCount, shownOn, applyCheckoff, checkoff, suppId, DEFAULT_SUPPLEMENTS } from "../js/supplements.js";
+import { cleanSupplements, suppStatus, suppCount, shownOn, applyCheckoff, checkoff, suppId, DEFAULT_SUPPLEMENTS, pauseSupp, resumeSupp, isTaking, pausedOn, currentSupps, pausedSupps } from "../js/supplements.js";
 
 const LIST = [
   { id: "creatine", name: "Creatine", dose: "5 g" },
@@ -45,6 +45,28 @@ test("adding a supplement never turns earlier days into misses; removing one sto
   assert.equal(dayScore(day("2026-10-12", { creatine: true }), { ...DEFAULT_GOALS, tracked: ["creatine"], supplements: [] }).total, 0);
 });
 
+test("pausing takes a supplement off from today; resuming puts the same one back; the gap never counts", () => {
+  const beet = { id: "beetroot", name: "Beetroot", periods: [{ from: "2026-10-10" }] };
+  const paused = pauseSupp(beet, "2026-10-20");
+  assert.equal(isTaking(paused), false);
+  assert.equal(pausedOn(paused), "2026-10-20");
+  assert.deepEqual(currentSupps([paused]), []);
+  assert.deepEqual(pausedSupps([paused]).map((s) => s.id), ["beetroot"]);
+  const back = resumeSupp(paused, "2026-11-01");
+  assert.deepEqual(back.periods, [{ from: "2026-10-10", to: "2026-10-20" }, { from: "2026-11-01" }]);
+  const list = [{ id: "creatine", name: "Creatine", periods: [{}] }, back];
+  // taken while due, paused in between, back again
+  assert.equal(suppStatus(day("2026-10-15", { creatine: true }), list), "miss", "beetroot was due and not taken");
+  assert.equal(suppStatus(day("2026-10-25", { creatine: true }), list), "hit", "paused: only creatine counts");
+  assert.equal(suppStatus(day("2026-11-02", { creatine: true }), list), "miss", "resumed: beetroot counts again");
+  assert.deepEqual(shownOn(list, {}, "2026-10-25").map((s) => s.id), ["creatine"], "paused days don't show it in the log");
+  // paused and resumed the same day: as if never paused
+  assert.deepEqual(resumeSupp(pauseSupp(beet, "2026-11-03"), "2026-11-03").periods, [{ from: "2026-10-10" }]);
+  // added and paused the same day: it never counted
+  assert.deepEqual(pauseSupp({ id: "x", name: "X", periods: [{ from: "2026-11-03" }] }, "2026-11-03").periods, []);
+  assert.equal(suppStatus(day("2026-11-03", { creatine: true }), [list[0], pauseSupp({ id: "x", name: "X", periods: [{ from: "2026-11-03" }] }, "2026-11-03")]), "hit");
+});
+
 test("the log shows what's due that day plus anything already checked off for it", () => {
   const removed = [...LIST, { id: "zinc", name: "Zinc", since: "2026-09-01", until: "2026-09-20" }];
   assert.deepEqual(shownOn(removed, {}, "2026-10-05").map((s) => s.id), ["creatine"]);
@@ -54,7 +76,9 @@ test("the log shows what's due that day plus anything already checked off for it
 
 test("the list and day checkoffs are cleaned; creatine keeps its own field", () => {
   assert.deepEqual(cleanSupplements([{ id: "fish_oil", name: " Fish oil ", dose: "" }, { id: "fish_oil", name: "dupe" }, { id: "Bad Id", name: "x" }, { id: "x", name: "" }, { id: "b", name: "B", since: "nope", until: "2026-10-01" }]),
-    [{ id: "fish_oil", name: "Fish oil" }, { id: "b", name: "B", until: "2026-10-01" }]);
+    [{ id: "fish_oil", name: "Fish oil", periods: [{}] }, { id: "b", name: "B", periods: [{ to: "2026-10-01" }] }], "lists saved before pausing existed become periods");
+  assert.deepEqual(cleanSupplements([{ id: "z", name: "Z", periods: [{ from: "2026-11-05", to: "2026-11-09" }, { from: "2026-10-01", to: "2026-10-03" }, { from: "2026-11-10", to: "2026-11-10" }, { from: "bad" }] }])[0].periods,
+    [{}, { from: "2026-10-01", to: "2026-10-03" }, { from: "2026-11-05", to: "2026-11-09" }], "sorted; an empty stretch dropped; a bad date means 'from the start'");
   assert.deepEqual(cleanSupplements(undefined), DEFAULT_SUPPLEMENTS);
   assert.deepEqual(cleanSupplements([]), [], "an empty list is allowed");
   assert.deepEqual(cleanManual({ creatine: true, supps: { fish_oil: true, beetroot: "yes", creatine: false, "BAD": true } }), { creatine: true, supps: { fish_oil: true } });
@@ -87,13 +111,13 @@ test("the list is saved with your goals", async () => {
   const before = (await call("GET", "/api/state")).body.goals;
   assert.deepEqual(before.supplements, DEFAULT_SUPPLEMENTS);
   const r = await call("PUT", "/api/goals", { ...before, supplements: LIST });
-  assert.deepEqual(r.body.goals.supplements, LIST);
-  assert.deepEqual((await call("GET", "/api/state")).body.goals.supplements, LIST);
+  assert.deepEqual(r.body.goals.supplements, cleanSupplements(LIST));
+  assert.deepEqual((await call("GET", "/api/state")).body.goals.supplements, cleanSupplements(LIST));
   // goals saved without the field (a tab open from before the update) keep the saved list
-  assert.deepEqual((await call("PUT", "/api/goals", { protein: 150 })).body.goals.supplements, LIST);
+  assert.deepEqual((await call("PUT", "/api/goals", { protein: 150 })).body.goals.supplements, cleanSupplements(LIST));
   // so does importing an export made before there was a list
   await call("POST", "/api/import", { days: {}, goals: { protein: 140 } });
-  assert.deepEqual((await call("GET", "/api/state")).body.goals.supplements, LIST);
+  assert.deepEqual((await call("GET", "/api/state")).body.goals.supplements, cleanSupplements(LIST));
 });
 
 test("checkoffs sent one at a time all stick, even sent together", async () => {

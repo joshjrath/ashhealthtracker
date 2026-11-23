@@ -2,27 +2,60 @@
    Supplements: what you take, and which you took each day.
 
    The list lives with your goals (goals.supplements): a name, an optional
-   dose, and the dates it applies between. Each day keeps a yes/no per
-   supplement, checked off one by one. Creatine keeps its own field
-   (manual.creatine) from before there was a list; every other supplement
-   is under manual.supps by id.
+   dose, and the stretches of time you've been taking it (periods). Each
+   day keeps a yes/no per supplement, checked off one by one. Creatine keeps
+   its own field (manual.creatine) from before there was a list; every other
+   supplement is under manual.supps by id.
+
+   Taking a break from one? Pause it in Settings: it leaves Today and the
+   log, and stops counting toward the goal, until you resume it — the same
+   supplement, with its history intact. Each pause closes a period and each
+   resume opens a new one, so the days in between never count as missed.
 
    The "Supplements" goal is hit when everything due that day was taken.
-   A supplement is only due from the day you added it (since) and until
-   the day you removed it, so changing the list never rewrites history —
-   adding fish oil today can't turn last month's creatine days into misses.
+   A supplement is due only inside its periods, so changing the list never
+   rewrites history — adding fish oil today can't turn last month's creatine
+   days into misses, and pausing beetroot doesn't erase the days you took it.
 
    Shared by the browser and the server.
    ────────────────────────────────────────────────────────────────────────── */
 
-export const DEFAULT_SUPPLEMENTS = [{ id: "creatine", name: "Creatine", dose: "5 g" }];
+export const DEFAULT_SUPPLEMENTS = [{ id: "creatine", name: "Creatine", dose: "5 g", periods: [{}] }];
 const ID_RE = /^[a-z0-9_]{1,32}$/;
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX = 40;
+const MAX_PERIODS = 60;
 
-/** The list, checked: unique ids, a name, an optional dose and dates. Not an array → the default. */
+/**
+ * When a supplement counts: [{ from?, to? }], oldest first. `to` is the day
+ * it was paused (not counted); no `from` means from the start of your log;
+ * an open period (no `to`) means you're taking it now. Lists saved before
+ * pausing existed carry since/until instead — the same thing, one period.
+ */
+export function periodsOf(s) {
+  if (Array.isArray(s?.periods)) return s.periods;
+  const p = {};
+  if (s?.since) p.from = s.since;
+  if (s?.until) p.to = s.until;
+  return [p];
+}
+
+function cleanPeriods(raw) {
+  const out = [];
+  for (const p of (Array.isArray(raw) ? raw : []).slice(0, MAX_PERIODS)) {
+    if (!p || typeof p !== "object") continue;
+    const x = {};
+    if (KEY_RE.test(p.from || "")) x.from = p.from;
+    if (KEY_RE.test(p.to || "")) x.to = p.to;
+    if (x.from && x.to && x.to <= x.from) continue; // started and stopped the same day: never counted
+    out.push(x);
+  }
+  return out.sort((a, b) => String(a.from || "").localeCompare(String(b.from || "")));
+}
+
+/** The list, checked: unique ids, a name, an optional dose and its periods. Not an array → the default. */
 export function cleanSupplements(raw) {
-  if (!Array.isArray(raw)) return DEFAULT_SUPPLEMENTS.map((s) => ({ ...s }));
+  if (!Array.isArray(raw)) return DEFAULT_SUPPLEMENTS.map((s) => ({ ...s, periods: s.periods.map((p) => ({ ...p })) }));
   const out = [];
   const seen = new Set();
   for (const s of raw.slice(0, MAX)) {
@@ -34,8 +67,7 @@ export function cleanSupplements(raw) {
     const x = { id, name };
     const dose = typeof s.dose === "string" ? s.dose.trim().slice(0, 30) : "";
     if (dose) x.dose = dose;
-    if (KEY_RE.test(s.since || "")) x.since = s.since;
-    if (KEY_RE.test(s.until || "")) x.until = s.until;
+    x.periods = cleanPeriods(periodsOf(s));
     out.push(x);
   }
   return out;
@@ -52,12 +84,37 @@ export function cleanSupps(raw) {
 }
 
 export const suppLabel = (s) => (s.dose ? `${s.name} · ${s.dose}` : s.name);
-/** Still on your list (not removed). */
-export const currentSupps = (list) => (list || []).filter((s) => !s.until);
-/** Due on day `key`: added on or before it, not removed by it. */
-export const dueOn = (list, key) => (list || []).filter((s) => !key || ((!s.since || key >= s.since) && (!s.until || key < s.until)));
+/** Taking it now: its latest period is still open. */
+export const isTaking = (s) => periodsOf(s).some((p) => !p.to);
+/** On your list and in use. */
+export const currentSupps = (list) => (list || []).filter(isTaking);
+/** On your list, paused. */
+export const pausedSupps = (list) => (list || []).filter((s) => !isTaking(s));
+/** The day it was last paused, if it's paused. */
+export const pausedOn = (s) => (isTaking(s) ? null : periodsOf(s).map((p) => p.to).filter(Boolean).sort().at(-1) || null);
+const inPeriod = (p, key) => (!p.from || key >= p.from) && (!p.to || key < p.to);
+/** Due on day `key`: inside one of its periods. Without a day, what you're taking now. */
+export const dueOn = (list, key) => (list || []).filter((s) => (key ? periodsOf(s).some((p) => inPeriod(p, key)) : isTaking(s)));
 /** Shown for day `key` in the log: due that day, or already checked off for it. */
 export const shownOn = (list, day, key) => (list || []).filter((s) => dueOn([s], key).length || typeof taken(day, s.id) === "boolean");
+
+/** Pause from `today`: it stops counting today. Paused the day it started → that period never counted. */
+export function pauseSupp(s, today) {
+  const periods = periodsOf(s).map((p) => ({ ...p }));
+  const open = periods.find((p) => !p.to);
+  if (open) open.to = today;
+  return { ...s, periods: periods.filter((p) => !(p.from && p.to && p.to <= p.from)) };
+}
+
+/** Resume from `today`. Paused earlier today → it simply carries on, as if never paused. */
+export function resumeSupp(s, today) {
+  if (isTaking(s)) return s;
+  const periods = periodsOf(s).map((p) => ({ ...p }));
+  const same = periods.find((p) => p.to === today);
+  if (same) delete same.to;
+  else periods.push({ from: today });
+  return { ...s, periods };
+}
 
 /** Taken (true), skipped (false) or not logged (undefined) — from a stored manual bucket or a resolved day. */
 export const taken = (day, id) => (id === "creatine" ? day?.creatine : day?.supps?.[id]);

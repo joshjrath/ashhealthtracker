@@ -19,7 +19,7 @@ import { cleanMeal, cleanReward, cleanFood, newId } from "./library.js";
 import { dayLabel } from "./diary.js";
 import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, openPlaceholder, closeSheet } from "./foodsheet.js";
 import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
-import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
+import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, pausedSupps, pauseSupp, resumeSupp, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
 
 /*
  * state.raw  — days as stored: { manual, apple, legacy } buckets (sample days while demo is on)
@@ -513,13 +513,27 @@ const ACTS = {
     commit(() => api.patchDay(key, checkoff(id, v)));
     return false;
   },
-  "supp-remove": (el) => {
-    const list = state.goals.supplements || DEFAULT_SUPPLEMENTS;
+  "supp-pause": (el) => {
+    const list = suppEdits();
     const s = list.find((x) => x.id === el.dataset.v);
-    if (!s || !confirm(`Remove ${s.name} from your list? Days you've already logged keep it.`)) return false;
-    const today = keyOf(new Date());
-    // Added today and gone today: nothing to keep. Otherwise it stops counting from today on.
-    saveSupplements(s.since === today ? list.filter((x) => x !== s) : list.map((x) => (x === s ? { ...x, until: today } : x)));
+    if (!s) return false;
+    saveSupplements(list.map((x) => (x === s ? pauseSupp(x, keyOf(new Date())) : x)));
+    toast(`${s.name} paused — off Today until you resume it`);
+    return false;
+  },
+  "supp-resume": (el) => {
+    const list = suppEdits();
+    const s = list.find((x) => x.id === el.dataset.v);
+    if (!s) return false;
+    saveSupplements(list.map((x) => (x === s ? resumeSupp(x, keyOf(new Date())) : x)));
+    toast(`${s.name} is back on Today`);
+    return false;
+  },
+  "supp-delete": (el) => {
+    const list = suppEdits();
+    const s = list.find((x) => x.id === el.dataset.v);
+    if (!s || !confirm(`Delete ${s.name} for good? It also drops out of your past days' Supplements goal. To stop it for now and keep its history, leave it paused instead.`)) return false;
+    saveSupplements(list.filter((x) => x !== s));
     return false;
   },
   "lift-repeat": (el) => {
@@ -1081,6 +1095,16 @@ function saveLifts(lifts) {
   });
 }
 
+/** The list with any names or doses typed into Settings but not saved yet, so a Pause or Resume never loses them. */
+function suppEdits() {
+  const f = document.getElementById("sec-supplements");
+  return (state.goals.supplements || DEFAULT_SUPPLEMENTS).map((s) => {
+    const name = f?.elements[`sn-${s.id}`]?.value.trim();
+    const dose = f?.elements[`sd-${s.id}`]?.value.trim();
+    return { ...s, ...(name ? { name } : {}), ...(dose !== undefined ? { dose } : {}) };
+  });
+}
+
 function saveSupplements(list) {
   state.goals = { ...state.goals, supplements: cleanSupplements(list) };
   const { plan, ...send } = state.goals;
@@ -1157,16 +1181,18 @@ const FORMS = {
     flash("#sec-achievements", "Saved — progress recalculated");
   },
   supplements(f) {
-    const list = (state.goals.supplements || DEFAULT_SUPPLEMENTS).map((s) => {
-      if (s.until) return s;
-      const name = f.elements[`sn-${s.id}`]?.value.trim();
-      const dose = f.elements[`sd-${s.id}`]?.value.trim() ?? s.dose;
-      return { ...s, name: name || s.name, dose };
-    });
+    let list = suppEdits();
     const name = f.elements["sn-new"].value.trim();
+    const today = keyOf(new Date());
     if (name) {
-      if (currentSupps(list).some((s) => s.name.toLowerCase() === name.toLowerCase()) && !confirm(`${name} is already on your list. Add it again?`)) return;
-      list.push({ id: suppId(name, list), name, dose: f.elements["sd-new"].value.trim(), since: keyOf(new Date()) });
+      const same = (s) => s.name.toLowerCase() === name.toLowerCase();
+      const paused = pausedSupps(list).find(same);
+      if (paused && confirm(`${paused.name} is on your list, paused. Resume it? (Cancel adds a separate one.)`)) {
+        list = list.map((x) => (x === paused ? resumeSupp(x, today) : x));
+      } else {
+        if (!paused && currentSupps(list).some(same) && !confirm(`${name} is already on your list. Add it again?`)) return;
+        list.push({ id: suppId(name, list), name, dose: f.elements["sd-new"].value.trim(), periods: [{ from: today }] });
+      }
     }
     saveSupplements(list);
   },
