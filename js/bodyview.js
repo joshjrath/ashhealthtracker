@@ -99,7 +99,7 @@ function timelinesHtml(b) {
   const when = (wk) => (wk === 0 ? "now" : wk == null ? "not at this pace" : monthOf(addDays(todayKey(), wk * 7)));
   const rows = tl.rows.map((r) => `<div class="bctl"><b>${r.target}%</b><span>${r.weeks == null ? "Not within three years at this pace" : `around <b>${when(r.weeks)}</b>${r.weight ? ` at ~${fmtInt(r.weight)} lb` : ""}`}</span><em>${r.weeks == null ? "" : `range ${when(r.early)} – ${when(r.late)}`}</em></div>`).join("");
   return `<div class="bctls">${rows}</div>
-    <p class="hint small">If your current pace (${tl.rate.toFixed(2)}% of body weight a week) holds — it usually slows as you get leaner, so treat the later end as likelier. The range covers your body fat's uncertainty and a quarter slower pace. Not a promise.</p>`;
+    <p class="hint small">If your current pace (${tl.rate.toFixed(2)}% of body weight a week) holds — it usually slows as you get leaner, so treat the later end as likelier. The range covers your body fat's uncertainty and a quarter slower pace. Not a promise. <a href="#/forecast">The full forecast</a> models the slowing too, and lets you try changes.</p>`;
 }
 const todayKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 

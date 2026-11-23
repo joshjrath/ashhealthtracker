@@ -15,12 +15,13 @@ import {
   workoutsIn, fitnessTotals, workoutStreak, weeklyReview, insights,
   fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
-import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart, strengthIndexChart, liftChart, bodyFatChart, measureChart } from "./charts.js";
+import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart, strengthIndexChart, liftChart, bodyFatChart, measureChart, forecastChart } from "./charts.js";
 import { reviewItems } from "./sources.js";
 import { MEALS } from "./nutrition.js";
 import { WEEKDAYS, WEEKDAY_LABELS, PLAN_TYPES, PLAN_LABELS } from "./training.js";
 import { preservationCard, overloadCard, volumeCard, strengthOf, chosenLift } from "./strengthview.js";
 import { bodyCompCard, measurementsCard, photosCard, bodyOf, chosenMeasure } from "./bodyview.js";
+import { statusCard, milestonesCard, projectionCard, helpCard, forecastChartData } from "./forecastview.js";
 import { measureSeries, weightAt, MEASURE_LABEL, BF_LABEL } from "./bodycomp.js";
 import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
@@ -1551,6 +1552,14 @@ export const PAGES = {
     title: "Calendar",
     render: (ctx) => `${pageHeader(ctx, "Calendar", false)}${demoBanner(ctx)}${calendar(ctx)}`,
   },
+  forecast: {
+    title: "Am I on track?",
+    render: (ctx) => `${pageHeader(ctx, "Am I on track?", false)}${demoBanner(ctx)}
+      ${statusCard(ctx)}
+      ${milestonesCard(ctx)}
+      ${projectionCard(ctx)}
+      ${helpCard(ctx)}`,
+  },
   notifications: {
     title: "Notifications",
     render: (ctx) => `${pageHeader(ctx, "Notifications", false)}${notificationsPage(ctx)}`,
@@ -1568,6 +1577,7 @@ export const foodDay = (ctx) => (ctx.ui.foodDay && ctx.ui.foodDay <= ctx.today ?
 /* ── measured charts ───────────────────────────────────────────────────── */
 
 export const CHARTS = {
+  forecast: (ctx, width) => forecastChart(forecastChartData(ctx), { width, fmtDay, height: width < 520 ? 250 : 300 }),
   bodyfat: (ctx, width) => {
     const b = bodyOf(ctx);
     return bodyFatChart(b.readings.filter((r) => r.key >= addDays(ctx.today, -365)), b.bf, { width, fmtDay, today: ctx.today, labels: BF_LABEL, height: width < 520 ? 210 : 230 });

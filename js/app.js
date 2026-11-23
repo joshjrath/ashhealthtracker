@@ -21,6 +21,7 @@ import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, ope
 import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
 import { readNotifyForm, keyBytes } from "./notifyview.js";
 import { measureForm, photoForm, navyText, lastPhotoOf, photoSrc, ghostLabel } from "./bodyview.js";
+import { projectionOut, fcValueText } from "./forecastview.js";
 import { navyBodyFat } from "./profile.js";
 import { MEASURES } from "./sources.js";
 import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, pausedSupps, pauseSupp, resumeSupp, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
@@ -591,6 +592,10 @@ const ACTS = {
     commit(() => api.putGoals(send)).then(() => toast(`Calorie target set to ${t.toLocaleString("en-US")} kcal`));
     return false;
   },
+  /* forecast */
+  "fc-view": (el) => { ui.fcView = el.dataset.v; },
+  "fc-span": (el) => { ui.fcSpan = Number(el.dataset.v); },
+  "fc-reset": () => { ui.fc = {}; },
   /* body composition */
   "meas-open": (el) => { openMeasure(el.dataset.key); return false; },
   "meas-pick": (el) => { ui.measure = el.dataset.v; },
@@ -1154,6 +1159,29 @@ paneldlg.addEventListener("submit", (e) => {
   if (!f || !FORMS[f.dataset.form]) return;
   e.preventDefault();
   FORMS[f.dataset.form](f);
+});
+
+/* ── forecast what-if ───────────────────────────────────────────────────── */
+
+// The sliders redraw only the chart and summary under them, so dragging keeps focus.
+let fcTimer;
+view.addEventListener("input", (e) => {
+  if (!e.target.matches("[data-fc]")) return;
+  const el = e.target;
+  ui.fc = { ...(ui.fc || {}), [el.name]: el.type === "checkbox" ? el.checked : Number(el.value) };
+  const label = view.querySelector(`[data-fc-v="${el.name}"]`);
+  const c = ctx();
+  if (label) label.textContent = fcValueText(c, el.name, Number(el.value));
+  clearTimeout(fcTimer);
+  fcTimer = setTimeout(() => {
+    const cc = ctx();
+    const out = view.querySelector("[data-fc-out]");
+    if (!out) return;
+    out.innerHTML = projectionOut(cc);
+    out.querySelectorAll("[data-chart]").forEach((ch) => { const w = Math.floor(ch.clientWidth); if (w) { ch.innerHTML = CHARTS[ch.dataset.chart](cc, w); ch.dataset.w = w; } });
+    const reset = view.querySelector("[data-fc-reset]");
+    if (reset) reset.hidden = false;
+  }, 60);
 });
 
 /* ── body composition ──────────────────────────────────────────────────── */

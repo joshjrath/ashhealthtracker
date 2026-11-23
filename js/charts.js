@@ -706,3 +706,48 @@ export function measureChart(series, weights, { width, height = 230, fmtDay, uni
   const dots = S.map((s) => `<g class="hit" ${tip(fmtDay(s.key), `${label} ${s.v.toFixed(1)} ${unit}`)}><circle cx="${x(s.key).toFixed(1)}" cy="${y(s.v).toFixed(1)}" r="10" fill="transparent"/><circle class="ms-pt" cx="${x(s.key).toFixed(1)}" cy="${y(s.v).toFixed(1)}" r="4"/></g>`).join("");
   return `<svg class="plot measure" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="${esc(label)} over time in ${unit}, with weight">${grid}${xl}${wl ? `<path class="ewline" d="${wl}"/>` : ""}${S.length > 1 ? `<path class="ms-line" d="${line}"/>` : ""}${dots}</svg>`;
 }
+
+/**
+ * The forecast: the last 12 weeks of logged values (dots, with the 7-day
+ * average), the projection's likely range and middle line from today, a
+ * what-if line, what the model expected six weeks ago, milestone markers
+ * and the goal line.
+ */
+export function forecastChart(d, { width, height = 300, fmtDay }) {
+  const P = { l: 46, r: 16, t: 16, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  const x0 = -d.back, x1 = d.n;
+  const vals = [...d.hist.map((h) => h.v), ...d.band.flatMap((b) => [b.lo, b.hi]), ...(d.sc || []).map((s) => s.v), ...(d.bt || []).map((s) => s.v)];
+  if (d.goal != null) vals.push(d.goal);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max(d.unit === "%" ? 0.5 : 1, (hi - lo) * 0.08);
+  const step = niceStep(hi - lo + 2 * pad, 5);
+  lo = Math.floor((lo - pad) / step) * step; hi = Math.ceil((hi + pad) / step) * step;
+  const x = (v) => P.l + ((v - x0) / (x1 - x0)) * iw;
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${+v.toFixed(1)}${d.unit === "%" ? "%" : ""}</text>`;
+  const dayKey = (off) => { const [yy, mm, dd] = d.today.split("-").map(Number); const t = new Date(yy, mm - 1, dd + off); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
+  const tickEvery = d.n <= 120 ? 30 : d.n <= 400 ? 91 : 182;
+  let xl = `<text class="axis on" x="${x(0).toFixed(1)}" y="${height - 8}" text-anchor="middle">Today</text>`;
+  for (let t = tickEvery; t <= d.n; t += tickEvery) if (x(t) < W - P.r - 20) xl += `<text class="axis" x="${x(t).toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(dayKey(t), true))}</text>`;
+  if (x(-d.back) + 30 < x(0) - 40) xl += `<text class="axis" x="${x(-d.back).toFixed(1)}" y="${height - 8}" text-anchor="start">${esc(fmtDay(dayKey(-d.back), true))}</text>`;
+  const band = d.band.map((b, i) => `${i ? "L" : "M"}${x(b.x).toFixed(1)},${y(b.hi).toFixed(1)}`).join("") + [...d.band].reverse().map((b) => `L${x(b.x).toFixed(1)},${y(b.lo).toFixed(1)}`).join("") + "Z";
+  const mid = d.band.map((b, i) => `${i ? "L" : "M"}${x(b.x).toFixed(1)},${y(b.mid).toFixed(1)}`).join("");
+  const sc = d.sc ? d.sc.map((s, i) => `${i ? "L" : "M"}${x(s.x).toFixed(1)},${y(s.v).toFixed(1)}`).join("") : "";
+  const bt = d.bt ? d.bt.map((s, i) => `${i ? "L" : "M"}${x(s.x).toFixed(1)},${y(s.v).toFixed(1)}`).join("") : "";
+  const avg = d.hist.filter((h) => h.avg != null).map((h, i) => `${i ? "L" : "M"}${x(h.x).toFixed(1)},${y(h.avg).toFixed(1)}`).join("");
+  const dots = d.hist.map((h) => `<circle class="fc-dot" cx="${x(h.x).toFixed(1)}" cy="${y(h.v).toFixed(1)}" r="2.4"/>`).join("");
+  const goal = d.goal != null && d.goal >= lo && d.goal <= hi ? `<line class="fc-goal" x1="${P.l}" x2="${W - P.r}" y1="${y(d.goal).toFixed(1)}" y2="${y(d.goal).toFixed(1)}"/><text class="axis fc-goalt" x="${W - P.r - 4}" y="${(y(d.goal) - 6).toFixed(1)}" text-anchor="end">Goal ${+d.goal.toFixed(1)}${d.unit === "%" ? "%" : " lb"}</text>` : "";
+  const marks = d.marks.map((m) => `<g class="fc-mark"><line x1="${x(m.x).toFixed(1)}" x2="${x(m.x).toFixed(1)}" y1="${P.t}" y2="${P.t + ih}"/><text class="axis" x="${(x(m.x) + 4).toFixed(1)}" y="${P.t + 11}">${esc(m.label)}</text></g>`).join("");
+  const every = Math.max(1, Math.round(d.n / 60));
+  const hits = d.band.filter((b) => b.x % every === 0).map((b) => `<g class="hit" ${tip(b.x === 0 ? "Today" : fmtDay(dayKey(b.x)), `Middle estimate ${b.mid.toFixed(1)}${d.unit === "%" ? "%" : " lb"}`, `Likely ${b.lo.toFixed(1)}–${b.hi.toFixed(1)}`, d.sc ? `What-if ${d.sc[b.x].v.toFixed(1)}` : "")}>
+      <rect x="${(x(b.x) - (iw / (x1 - x0)) * every / 2).toFixed(1)}" y="${P.t}" width="${Math.max(2, (iw / (x1 - x0)) * every).toFixed(1)}" height="${ih}" fill="transparent"/>
+      <line class="cross" x1="${x(b.x).toFixed(1)}" x2="${x(b.x).toFixed(1)}" y1="${P.t}" y2="${P.t + ih}"/></g>`).join("");
+  return `<svg class="plot forecast" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Projection with its likely range, against your logged values">
+    ${grid}${xl}<line class="fc-now" x1="${x(0).toFixed(1)}" x2="${x(0).toFixed(1)}" y1="${P.t}" y2="${P.t + ih}"/>
+    ${goal}${marks}<path class="fc-band" d="${band}"/><path class="fc-mid" d="${mid}"/>
+    ${bt ? `<path class="fc-bt" d="${bt}"/>` : ""}${avg ? `<path class="fc-avg" d="${avg}"/>` : ""}${dots}${sc ? `<path class="fc-sc" d="${sc}"/>` : ""}${hits}
+  </svg>`;
+}
