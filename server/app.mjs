@@ -65,6 +65,7 @@ import { parseIngest } from "./apple.mjs";
 import { DEFAULT_GOALS, GOAL_IDS } from "../js/metrics.js";
 import { cleanManual, cleanStored, migrateDay, reviewItems, applyReview } from "../js/sources.js";
 import { CLEAN, matchFoods } from "../js/library.js";
+import { EXAMPLE_RECIPES, cleanRecipe } from "../js/recipes.js";
 import { cleanPlan } from "../js/training.js";
 import { cleanExerciseGroups } from "../js/liftstats.js";
 import { readUpload, MAX_PHOTOS } from "./photos.mjs";
@@ -110,7 +111,7 @@ const PREFS = {
 };
 export const DEFAULT_PREFS = { weightRange: "90", trendRange: 30, trendMetric: "calories", sleepN: 7, showSample: true };
 
-const ITEM_KINDS = Object.keys(CLEAN); // food, meal, reward
+const ITEM_KINDS = Object.keys(CLEAN); // food, meal, reward, recipe, combo
 const FOOD_KEYS = ["usdaKey", "anthropicKey", "fatsecretId", "fatsecretSecret"];
 
 /**
@@ -358,6 +359,7 @@ export async function createApp({
 
   async function api(req, res, method, path) {
     if (path === "/api/state" && method === "GET") {
+      await seedRecipes();
       const [s, library, plan, tiers, catalog, ledger, bst, recovery] = await Promise.all([
         store.getAll(), loadLibrary(), store.getMeta("trainingPlan"), store.getMeta("achievementTiers"),
         store.getMeta("achievementCatalog"), store.getMeta("achievementLedger"), backups.status(), backups.recovery(),
@@ -594,9 +596,16 @@ export async function createApp({
     };
   }
 
+  /** The two example recipes, once — never again after you delete them, and not on top of restored ones. */
+  async function seedRecipes() {
+    if (await store.getMeta("recipesSeeded")) return;
+    if (!(await store.listItems("recipe")).length) for (const r of EXAMPLE_RECIPES) await store.putItem("recipe", r.id, cleanRecipe(r));
+    await store.setMeta("recipesSeeded", true);
+  }
+
   async function loadLibrary() {
-    const [foods, meals, rewards] = await Promise.all(ITEM_KINDS.map((k) => store.listItems(k)));
-    return { foods, meals, rewards };
+    const lists = await Promise.all(ITEM_KINDS.map((k) => store.listItems(k)));
+    return Object.fromEntries(ITEM_KINDS.map((k, i) => [`${k}s`, lists[i]]));
   }
 
   /** Each newly logged entry that came from a saved food counts as a use (recent / frequent). */

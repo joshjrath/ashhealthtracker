@@ -14,6 +14,7 @@ import { resolveDay, MEASURES } from "../js/sources.js";
 import { DEFAULT_GOALS, GOAL_IDS, METRICS, sleepMinutes, foodStatus, dayScore } from "../js/metrics.js";
 import { MEALS, fmtQty } from "../js/nutrition.js";
 import { mealTotals } from "../js/library.js";
+import { per100 } from "../js/recipes.js";
 import { DEFAULT_SUPPLEMENTS, dueOn, taken, suppLabel, periodsOf, isTaking } from "../js/supplements.js";
 import { MUSCLES } from "../js/liftstats.js";
 import { MEASURE_LABEL, BF_LABEL } from "../js/bodycomp.js";
@@ -93,6 +94,16 @@ export function sheetTables(doc) {
     const t = mealTotals(m).totals;
     return [m.name, (m.items || []).map((it) => `${it.name} (${fmtQty(it.qty, it.unit, it.serving)})`).join("; "), t.kcal, t.protein, t.carbs, t.fat, !!m.favorite, !!m.archived];
   });
+  // recipes go in the same tab (its tab list is fixed in the Sheet's script); their numbers are per 100 g
+  for (const r of lib.recipes || []) {
+    for (const v of r.versions || []) {
+      const p = per100(v);
+      const r1 = (x) => (x == null ? "" : Math.round(x * 10) / 10);
+      meals.push([`Recipe: ${r.name} — ${v.label}${v.id === r.current ? " (current)" : ""}`,
+        `${(v.ingredients || []).map((i) => `${i.name} ${i.amount} ${i.unit}${i.state !== "raw" ? ` ${i.state}` : ""}`).join("; ")}${v.cookedWeight ? ` · cooked ${v.cookedWeight} g` : ""} · values per 100 g`,
+        p ? Math.round(p.kcal) : "", p ? r1(p.protein) : "", p ? r1(p.carbs) : "", p ? r1(p.fat) : "", !!r.favorite, !!r.archived]);
+    }
+  }
 
   const settings = [
     ["Goals", "", ""],

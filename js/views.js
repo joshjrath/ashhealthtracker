@@ -23,6 +23,7 @@ import { preservationCard, overloadCard, volumeCard, strengthOf, chosenLift } fr
 import { bodyCompCard, measurementsCard, photosCard, bodyOf, chosenMeasure } from "./bodyview.js";
 import { statusCard, milestonesCard, projectionCard, helpCard, forecastChartData } from "./forecastview.js";
 import { recoveryToday, recoveryCard, heartRows, loadSleepRows, sleepPerfPoints } from "./readinessview.js";
+import { calculatorCard, recipesCard } from "./recipeview.js";
 import { measureSeries, weightAt, MEASURE_LABEL, BF_LABEL } from "./bodycomp.js";
 import { DEFAULT_CATALOG } from "./achievements.js";
 import { foodDiaryCard, dailySummaryCard, weeklyBudgetCard, foodHistoryCard, libraryCard, pacingRows, macroLine, srcTag } from "./diary.js";
@@ -1522,6 +1523,8 @@ export const PAGES = {
       return `${pageHeader(ctx, "Nutrition", false)}${demoBanner(ctx)}${reviewNudge(ctx)}
       <div class="grid three">${calorieCard(ctx, key)}${macroCard(ctx, key)}${dailySummaryCard(ctx, key)}</div>
       <div class="grid wide-right">${foodDiaryCard(ctx, key)}<div class="sidecol">${weeklyBudgetCard(ctx)}${todayVsAvg(ctx)}</div></div>
+      ${calculatorCard(ctx, key)}
+      ${recipesCard(ctx)}
       ${nutritionTrends(ctx)}
       ${foodHistoryCard(ctx)}
       ${libraryCard(ctx)}`;

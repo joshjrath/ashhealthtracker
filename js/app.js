@@ -22,6 +22,8 @@ import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
 import { readNotifyForm, keyBytes } from "./notifyview.js";
 import { measureForm, photoForm, navyText, lastPhotoOf, photoSrc, ghostLabel } from "./bodyview.js";
 import { projectionOut, fcValueText } from "./forecastview.js";
+import { calcState, saveCalc, patchCalc, recipeForm, groceryForm, groceryText, totalsHtml } from "./recipeview.js";
+import { cleanRecipe, cleanCombo, currentVersion, portionEntry, scaleIngredient, versionTotals } from "./recipes.js";
 import { navyBodyFat } from "./profile.js";
 import { MEASURES } from "./sources.js";
 import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, pausedSupps, pauseSupp, resumeSupp, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
@@ -55,7 +57,7 @@ async function refresh() {
   state = {
     ...s, demo, raw, days: resolveAll(raw),
     goals: { ...s.goals, plan }, plan, savedPlan: s.plan || null,
-    library: demo ? { foods: [...lib.foods, ...sample.library.foods], meals: [...lib.meals, ...sample.library.meals], rewards: lib.rewards } : lib,
+    library: demo ? { ...lib, foods: [...lib.foods, ...sample.library.foods], meals: [...lib.meals, ...sample.library.meals] } : lib,
     serverLibrary: lib,
     achievements: s.achievements || { tiers: {}, catalog: [], ledger: { initializedAt: null, entries: {} } },
   };
@@ -604,6 +606,109 @@ const ACTS = {
     commit(() => api.patchDay(key, { checkin: Object.keys(ci).length ? ci : null }));
     return false;
   },
+  /* portion calculator */
+  "calc-add": (el) => { const r = recipeOf(el.dataset.v); const c = calcState(ui, ctx()); if (r && !c.rows.some((x) => x.id === r.id)) c.rows.push({ id: r.id, grams: r.defaultPortion }); saveCalc(ui); if (!location.hash.startsWith("#/nutrition")) location.hash = "#/nutrition"; setTimeout(() => document.getElementById("calculator")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); },
+  "calc-del": (el) => { calcState(ui, ctx()).rows.splice(Number(el.dataset.i), 1); saveCalc(ui); },
+  "calc-reset": () => { const c = calcState(ui, ctx()); for (const x of c.rows) x.grams = recipeOf(x.id)?.defaultPortion ?? x.grams; saveCalc(ui); },
+  "calc-default": (el) => {
+    const x = calcState(ui, ctx()).rows[Number(el.dataset.i)], r = recipeOf(x?.id);
+    if (!r) return false;
+    saveRecipe({ ...r, defaultPortion: x.grams }, `Default portion for ${r.name}: ${x.grams} g`);
+  },
+  "calc-log": () => {
+    const c = ctx(), calc = calcState(ui, c), key = foodDay(c);
+    const meal = view.querySelector('[data-calc="meal"]')?.value || calc.meal || "snacks";
+    const now = new Date(), time = key === keyOf(now) ? `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}` : undefined;
+    const rows = calc.rows.filter((x) => x.grams > 0);
+    const group = rows.length > 1 ? { id: newId("grp_"), name: "Portion calculator" } : null;
+    const entries = rows.map((x) => { const e = portionEntry(recipeOf(x.id), x.grams, meal, { time }); return e && { ...e, id: newId("f"), ...(group ? { group } : {}) }; }).filter(Boolean);
+    if (!entries.length) { toast("Set a portion first"); return false; }
+    sheetApi.saveEntries(key, entries);
+    const at = new Date().toISOString();
+    for (const x of rows) { const r = recipeOf(x.id); if (r) saveRecipe({ ...r, uses: { count: (r.uses?.count || 0) + 1, lastUsedAt: at } }); }
+    toast(`Logged ${entries.length === 1 ? entries[0].name : `${entries.length} portions`} to ${dayLabel(key, keyOf(new Date()))} · ${meal}`);
+    return false;
+  },
+  "combo-save": () => {
+    const rows = calcState(ui, ctx()).rows.filter((x) => x.grams > 0);
+    if (!rows.length) return false;
+    const name = prompt("Name this combination", rows.map((x) => recipeOf(x.id)?.name).join(" + ").slice(0, 80));
+    if (!name) return false;
+    const combo = cleanCombo({ name, parts: rows.map((x) => ({ recipeId: x.id, grams: x.grams })) });
+    if (!combo) return false;
+    leaveDemo();
+    state.library.combos ||= [];
+    upsert("combos", combo);
+    commit(() => api.putItem("combo", combo)).then(() => toast(`Saved “${combo.name}”`));
+    return false;
+  },
+  "combo-load": (el) => {
+    const cb = (state.library.combos || []).find((x) => x.id === el.dataset.v);
+    if (!cb) return false;
+    calcState(ui, ctx()).rows = cb.parts.filter((p) => recipeOf(p.recipeId)).map((p) => ({ id: p.recipeId, grams: p.grams }));
+    saveCalc(ui);
+  },
+  "combo-del": (el) => {
+    const cb = (state.library.combos || []).find((x) => x.id === el.dataset.v);
+    if (!cb || !confirm(`Delete the saved combination “${cb.name}”?`)) return false;
+    state.library.combos = state.library.combos.filter((x) => x.id !== cb.id);
+    commit(() => api.deleteItem("combo", cb.id));
+    return false;
+  },
+  /* recipes */
+  "rec-new": () => { openRecipe({ mode: "new", name: "", label: "Batch 1", defaultPortion: 300, ingredients: [blankIng()], cookedWeight: null, cookedEstimate: false, notes: "" }); return false; },
+  "rec-edit": (el) => { const r = recipeOf(el.dataset.v); if (r) openRecipe(draftFrom(r, "edit")); return false; },
+  "rec-batch": (el) => { const r = recipeOf(el.dataset.v); if (r) openRecipe({ ...draftFrom(r, "batch"), label: `Batch ${r.versions.length + 1}`, cookedWeight: null, cookedEstimate: false }); return false; },
+  "rec-dup": (el) => { const r = recipeOf(el.dataset.v); if (r) openRecipe({ ...draftFrom(r, "new"), id: null, dup: true, name: `${r.name} (copy)`, label: "Batch 1" }); return false; },
+  "rec-fav": (el) => { const r = recipeOf(el.dataset.v); if (r) saveRecipe({ ...r, favorite: !r.favorite }); return false; },
+  "rec-arch": (el) => { const r = recipeOf(el.dataset.v); if (r) saveRecipe({ ...r, archived: !r.archived }, r.archived ? `Restored ${r.name}` : `Archived ${r.name} — past diary entries keep their numbers`); return false; },
+  "rec-show-arch": () => { ui.recArchived = !ui.recArchived; },
+  "rec-delete": () => {
+    const r = recipeOf(recipeDraft?.id);
+    if (!r || !confirm(`Delete ${r.name} and all its batches? Diary entries you logged from it keep their numbers.`)) return false;
+    closePanel();
+    state.library.recipes = state.library.recipes.filter((x) => x.id !== r.id);
+    commit(() => api.deleteItem("recipe", r.id)).then(() => toast(`Deleted ${r.name}`));
+    return false;
+  },
+  "ing-add": () => { syncRecipe(); recipeDraft.ingredients.push(blankIng()); redrawPanel(); focusLast("input[name^=in-]"); return false; },
+  "ing-del": (el) => { syncRecipe(); recipeDraft.ingredients.splice(Number(el.dataset.i), 1); recipeDraft.lookup = null; redrawPanel(); return false; },
+  "ing-lookup": (el) => {
+    syncRecipe();
+    const i = Number(el.dataset.i), name = recipeDraft.ingredients[i]?.name;
+    if (!name) { toast("Type the ingredient's name first"); return false; }
+    recipeDraft.lookup = { i, loading: true };
+    redrawPanel();
+    api.searchFood(name).then((r) => { if (recipeDraft?.lookup?.i === i) { recipeDraft.lookup = { i, results: [...(r.saved || []), ...(r.results || [])] }; redrawPanel(); } })
+      .catch((e) => { if (recipeDraft?.lookup?.i === i) { recipeDraft.lookup = { i, error: e.message }; redrawPanel(); } });
+    return false;
+  },
+  "ing-pick": (el) => {
+    syncRecipe();
+    const i = Number(el.dataset.i), f = recipeDraft.lookup?.results?.[Number(el.dataset.j)];
+    const g = recipeDraft.ingredients[i];
+    if (!f || !g) return false;
+    g.basis = { name: f.name, serving: f.serving, nutrients: f.nutrients, portions: f.portions || [], source: f.source };
+    if (!(g.amount > 0)) { g.amount = f.serving?.grams ? 100 : f.serving?.amount || 1; g.unit = f.serving?.grams ? "g" : ["cup", "tbsp", "tsp", "piece", "ml", "oz"].includes(f.serving?.unit) ? f.serving.unit : "g"; }
+    const v = scaleIngredient(g);
+    if (v) Object.assign(g, v, { estimate: f.source?.kind === "estimate" });
+    else toast(`Can't convert ${g.unit} for this food — use g or oz`);
+    recipeDraft.lookup = null;
+    redrawPanel();
+    return false;
+  },
+  "ing-look-close": () => { syncRecipe(); recipeDraft.lookup = null; redrawPanel(); return false; },
+  "grocery-open": () => {
+    groceryPicks = {};
+    for (const x of calcState(ui, ctx()).rows) groceryPicks[x.id] = 1;
+    openPanel({ kind: "grocery" });
+    return false;
+  },
+  "grocery-copy": () => {
+    const text = groceryText(ctx(), groceryPicks, groceryHave);
+    navigator.clipboard?.writeText(text).then(() => toast("Copied — paste it into your notes"), () => toast("Couldn't copy — select the list instead"));
+    return false;
+  },
   /* forecast */
   "fc-view": (el) => { ui.fcView = el.dataset.v; },
   "fc-span": (el) => { ui.fcSpan = Number(el.dataset.v); },
@@ -1129,13 +1234,15 @@ function panelHtml() {
     case "lifts": return liftForm(c, liftDraft);
     case "measure": return measureForm(c, panel.key);
     case "photo": return photoForm(c, photoDraft);
+    case "recipe": return recipeForm(c, recipeDraft);
+    case "grocery": return groceryForm(c, groceryPicks, groceryHave);
     default: return "";
   }
 }
 function openPanel(p) {
   panel = p;
   panelBody.innerHTML = panelHtml();
-  paneldlg.classList.toggle("wide", p.kind === "lifts" || p.kind === "next" || p.kind === "measure" || p.kind === "photo");
+  paneldlg.classList.toggle("wide", p.kind === "lifts" || p.kind === "next" || p.kind === "measure" || p.kind === "photo" || p.kind === "recipe" || p.kind === "grocery");
   if (!paneldlg.open) paneldlg.showModal();
   const first = panelBody.querySelector("[data-focus]") || panelBody.querySelector("input:not([type=hidden]), select");
   if (first && matchMedia("(pointer: fine)").matches && p.kind !== "badge") first.focus();
@@ -1152,11 +1259,16 @@ function refreshPanel() {
  * first and then add, remove or replace rows — reading it again here would
  * pour the old rows' values into the new ones.
  */
+let redrawing = false;
 function redrawPanel() {
-  if (!panel || !paneldlg.open) return;
-  const top = paneldlg.scrollTop;
-  panelBody.innerHTML = panelHtml();
-  paneldlg.scrollTop = top;
+  // replacing the panel blurs a focused input, which can fire change → another redraw mid-replace
+  if (!panel || !paneldlg.open || redrawing) return;
+  redrawing = true;
+  try {
+    const top = paneldlg.scrollTop;
+    panelBody.innerHTML = panelHtml();
+    paneldlg.scrollTop = top;
+  } finally { redrawing = false; }
 }
 function closePanel() {
   panel = null;
@@ -1171,6 +1283,109 @@ paneldlg.addEventListener("submit", (e) => {
   if (!f || !FORMS[f.dataset.form]) return;
   e.preventDefault();
   FORMS[f.dataset.form](f);
+});
+
+/* ── portion calculator & recipes ──────────────────────────────────────── */
+
+const recipeOf = (id) => (state.library.recipes || []).find((r) => r.id === id);
+const blankIng = () => ({ name: "", amount: null, unit: "g", state: "raw", kcal: null, protein: null, carbs: null, fat: null, fiber: null });
+let recipeDraft = null, groceryPicks = {}, groceryHave = {};
+function draftFrom(r, mode) {
+  const v = currentVersion(r);
+  return { mode, id: r.id, name: r.name, label: v.label, versionId: v.id, defaultPortion: r.defaultPortion, ingredients: structuredClone(v.ingredients), cookedWeight: v.cookedWeight, cookedEstimate: v.cookedEstimate, notes: v.notes || "", per100: v.per100 };
+}
+function openRecipe(d) { recipeDraft = d; openPanel({ kind: "recipe" }); }
+function saveRecipe(r, msg) {
+  const clean = cleanRecipe(r);
+  if (!clean) return;
+  leaveDemo();
+  state.library.recipes ||= [];
+  upsert("recipes", clean);
+  commit(() => api.putItem("recipe", clean)).then(() => msg && toast(msg));
+}
+/** Read the recipe form back into the draft. */
+function syncRecipe() {
+  const f = panelBody.querySelector("form[data-form=recipe]");
+  if (!f || !recipeDraft) return;
+  const el = f.elements;
+  recipeDraft.name = el.name.value; recipeDraft.label = el.label.value; recipeDraft.notes = el.notes.value;
+  recipeDraft.defaultPortion = Number(el.defaultPortion.value) || 0;
+  recipeDraft.cookedWeight = Number(el.cookedWeight.value) || null;
+  recipeDraft.cookedEstimate = el.cookedEstimate.checked;
+  recipeDraft.ingredients.forEach((g, i) => {
+    if (!el[`in-${i}`]) return;
+    g.name = el[`in-${i}`].value; g.unit = el[`iu-${i}`].value; g.state = el[`is-${i}`].value; g.estimate = el[`ie-${i}`].checked;
+    const a = el[`ia-${i}`].value; g.amount = a === "" ? null : Number(a);
+    for (const k of ["kcal", "protein", "carbs", "fat", "fiber"]) { const v = el[`i${k}-${i}`].value; g[k] = v === "" ? null : Number(v); }
+  });
+}
+function recipeTotalsRefresh() {
+  const box = panelBody.querySelector("[data-rtot]");
+  if (!box || !recipeDraft) return;
+  const t = versionTotals({ ingredients: recipeDraft.ingredients });
+  const cw = recipeDraft.cookedWeight;
+  const p = cw > 0 ? Object.fromEntries(["kcal", "protein", "carbs", "fat", "fiber"].map((k) => [k, (t[k] / cw) * 100])) : null;
+  box.innerHTML = totalsHtml(t, p, cw);
+}
+paneldlg.addEventListener("input", (e) => {
+  if (panel?.kind !== "recipe") return;
+  const name = e.target.name || "";
+  syncRecipe();
+  const m = name.match(/^i[au]-(\d+)$/);
+  const mk = name.match(/^i(kcal|protein|carbs|fat|fiber)-(\d+)$/);
+  if (m) {
+    // a looked-up ingredient rescales when its amount or unit changes
+    const g = recipeDraft.ingredients[Number(m[1])];
+    const v = g?.basis && g.amount > 0 ? scaleIngredient(g) : null;
+    if (v) {
+      Object.assign(g, v);
+      for (const k of ["kcal", "protein", "carbs", "fat", "fiber"]) e.target.form.elements[`i${k}-${m[1]}`].value = v[k] ?? "";
+    }
+  } else if (mk) {
+    // typing a number yourself makes the numbers yours: it stops rescaling from the looked-up food
+    const g = recipeDraft.ingredients[Number(mk[2])];
+    if (g?.basis) { delete g.basis; e.target.closest(".ing")?.querySelector(".ing-basis")?.remove(); }
+  }
+  recipeTotalsRefresh();
+});
+paneldlg.addEventListener("change", (e) => {
+  if (panel?.kind === "recipe" && /^iu-\d+$/.test(e.target.name || "")) {
+    syncRecipe();
+    const i = Number(e.target.name.slice(3)), g = recipeDraft.ingredients[i];
+    const v = g?.basis && g.amount > 0 ? scaleIngredient(g) : null;
+    if (g?.basis && !v) toast(`Can't convert ${g.unit} for ${g.basis.name || "this food"} — try g or oz`);
+    if (v) { Object.assign(g, v); for (const k of ["kcal", "protein", "carbs", "fat", "fiber"]) e.target.form.elements[`i${k}-${i}`].value = v[k] ?? ""; }
+    recipeTotalsRefresh();
+  }
+  if (panel?.kind !== "grocery") return;
+  if (e.target.dataset.gpick) { groceryPicks[e.target.dataset.gpick] = Number(e.target.value) || 0; setTimeout(redrawPanel); }
+  if (e.target.dataset.ghave) { const v = e.target.value; if (v === "") delete groceryHave[e.target.dataset.ghave]; else groceryHave[e.target.dataset.ghave] = Number(v); setTimeout(redrawPanel); }
+});
+
+let calcSave;
+view.addEventListener("input", (e) => {
+  const kind = e.target.dataset?.calc;
+  if (kind !== "slide" && kind !== "grams") return;
+  const c = ctx(), calc = calcState(ui, c), i = Number(e.target.dataset.i);
+  if (!calc.rows[i]) return;
+  const g = Math.max(0, Math.min(5000, Math.round(Number(e.target.value) || 0)));
+  calc.rows[i].grams = g;
+  const row = view.querySelector(`[data-crow="${i}"]`);
+  if (kind === "slide") { const n = row?.querySelector('[data-calc="grams"]'); if (n) n.value = g; }
+  else { const s = row?.querySelector('[data-calc="slide"]'); if (s) s.value = Math.min(1000, g); }
+  patchCalc(view, ctx(), foodDay(c));
+  clearTimeout(calcSave);
+  calcSave = setTimeout(() => saveCalc(ui), 400);
+});
+view.addEventListener("change", (e) => {
+  const d = e.target.dataset || {};
+  if (d.calc === "add" && e.target.value) {
+    const r = recipeOf(e.target.value), calc = calcState(ui, ctx());
+    if (r && !calc.rows.some((x) => x.id === r.id)) calc.rows.push({ id: r.id, grams: r.defaultPortion });
+    saveCalc(ui); render();
+  } else if (d.calc === "meal") { calcState(ui, ctx()).meal = e.target.value; saveCalc(ui); }
+  else if (d.calc === "grams" || d.calc === "slide") saveCalc(ui); // no redraw here: change fires on every arrow key and on blur
+  else if (d.recCur) { const r = recipeOf(d.recCur); if (r) saveRecipe({ ...r, current: e.target.value }, "Switched batch — new portions use it; logged ones keep their numbers"); }
 });
 
 /* ── forecast what-if ───────────────────────────────────────────────────── */
@@ -1531,6 +1746,33 @@ const FORMS = {
       err.textContent = `Couldn't save it: ${e.message}`;
       err.hidden = false; btn.disabled = false; btn.textContent = "Save photo";
     }
+  },
+  recipe() {
+    syncRecipe();
+    const d = recipeDraft;
+    const ingredients = d.ingredients.filter((g) => g.name?.trim()).map((g) => ({ ...g, kcal: g.kcal ?? 0, amount: g.amount ?? 0 }));
+    if (!d.name.trim()) { alert("Give the recipe a name."); return; }
+    if (!ingredients.length && !d.per100) { alert("Add at least one ingredient."); return; }
+    if (ingredients.length && !(d.cookedWeight > 0) && !confirm("No cooked weight yet, so portions can't be worked out until you add it. Save anyway?")) return;
+    const prev = d.id ? recipeOf(d.id) : null;
+    const version = { label: d.label, ingredients, cookedWeight: d.cookedWeight, cookedEstimate: d.cookedEstimate, notes: d.notes, ...(ingredients.length ? {} : { per100: d.per100 }) };
+    let r, msg;
+    if (prev && d.mode === "edit") {
+      r = { ...prev, name: d.name, defaultPortion: d.defaultPortion, example: false, versions: prev.versions.map((v) => (v.id === d.versionId ? { ...version, id: v.id, createdAt: v.createdAt } : v)) };
+      msg = `Saved ${d.name} — portions you already logged keep their numbers`;
+    } else if (prev && d.mode === "batch") {
+      const nv = { ...version, id: newId("v") };
+      r = { ...prev, name: d.name, defaultPortion: d.defaultPortion, example: false, versions: [...prev.versions, nv], current: nv.id };
+      msg = `New batch of ${d.name} saved; earlier batches keep their numbers`;
+    } else {
+      r = { name: d.name, defaultPortion: d.defaultPortion, versions: [{ ...version, id: newId("v") }] };
+      msg = `Saved ${d.name}`;
+    }
+    const clean = cleanRecipe(r);
+    if (!clean) { alert("Couldn't save that recipe — check the ingredients."); return; }
+    closePanel();
+    if (!prev) { const c = calcState(ui, ctx()); c.rows.push({ id: clean.id, grams: clean.defaultPortion }); saveCalc(ui); }
+    saveRecipe(clean, msg);
   },
   exgroups(f) {
     const groups = { ...(state.goals.exerciseGroups || {}) };

@@ -25,8 +25,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 
-export const DATA_META = ["goals", "prefs", "trainingPlan", "achievementTiers", "achievementCatalog", "achievementLedger", "lastSync", "fieldsSeen", "schema", "notifySettings"];
-export const DATA_ITEMS = ["food", "meal", "reward"];
+export const DATA_META = ["goals", "prefs", "trainingPlan", "achievementTiers", "achievementCatalog", "achievementLedger", "lastSync", "fieldsSeen", "schema", "notifySettings", "recipesSeeded"];
+export const DATA_ITEMS = ["food", "meal", "reward", "recipe", "combo"];
 export const EVERY_HOURS = [0, 1, 3, 6, 12, 24];
 export const DEFAULT_EVERY = 3;
 
@@ -50,17 +50,19 @@ export function summarize(p) {
   return {
     days: keys.length, from: keys[0] || null, to: keys.at(-1) || null, entries, liftDays: lifts,
     foods: p.items?.food?.length || 0, meals: p.items?.meal?.length || 0, rewards: p.items?.reward?.length || 0,
+    recipes: p.items?.recipe?.length || 0,
   };
 }
 
-const isEmpty = (p) => !Object.keys(p.days || {}).length && !DATA_ITEMS.some((k) => p.items?.[k]?.length);
+// the example recipes alone don't make a log worth backing up
+const isEmpty = (p) => !Object.keys(p.days || {}).length && !DATA_ITEMS.some((k) => p.items?.[k]?.some((x) => !x.example));
 
 /** A backup as an export file: the same shape Settings → Export writes, so Import reads it. */
 export function toExport(p, takenAt) {
   return {
     format: "ash-health/backup-1", takenAt,
     days: p.days, goals: p.meta?.goals ?? undefined, plan: p.meta?.trainingPlan ?? null, prefs: p.meta?.prefs ?? undefined,
-    library: { foods: p.items?.food || [], meals: p.items?.meal || [], rewards: p.items?.reward || [] },
+    library: { foods: p.items?.food || [], meals: p.items?.meal || [], rewards: p.items?.reward || [], recipes: p.items?.recipe || [], combos: p.items?.combo || [] },
     achievements: { tiers: p.meta?.achievementTiers ?? {}, ledger: p.meta?.achievementLedger ?? null },
   };
 }
@@ -185,7 +187,7 @@ export function createBackups({ store, persistent = true, version = "", now = ()
   /** A backup that could refill an empty log, if the log is empty. */
   async function recovery() {
     const d = await store.dump();
-    const empty = !Object.keys(d.days).length && !DATA_ITEMS.some((k) => d.items[k]?.length);
+    const empty = !Object.keys(d.days).length && !DATA_ITEMS.some((k) => d.items[k]?.some((x) => !x.example));
     if (!empty) return null;
     const best = (await store.listSnapshots()).find((s) => s.summary?.days > 0 || s.summary?.foods > 0);
     return best ? { id: best.id, createdAt: best.createdAt, summary: best.summary } : null;

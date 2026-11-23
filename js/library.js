@@ -21,6 +21,7 @@
    ────────────────────────────────────────────────────────────────────────── */
 import { NUTRIENTS, UNIT_IDS } from "./nutrition.js";
 import { cleanSource, cleanServing, cleanFoodEntry, num } from "./sources.js";
+import { cleanRecipe, cleanCombo } from "./recipes.js";
 
 const str = (v, max) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
 const iso = (v) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : undefined);
@@ -107,7 +108,7 @@ export function cleanReward(raw) {
   return out;
 }
 
-export const CLEAN = { food: cleanFood, meal: cleanMeal, reward: cleanReward };
+export const CLEAN = { food: cleanFood, meal: cleanMeal, reward: cleanReward, recipe: cleanRecipe, combo: cleanCombo };
 
 /* ── lists ─────────────────────────────────────────────────────────────── */
 
