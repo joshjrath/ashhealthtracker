@@ -592,6 +592,18 @@ const ACTS = {
     commit(() => api.putGoals(send)).then(() => toast(`Calorie target set to ${t.toLocaleString("en-US")} kcal`));
     return false;
   },
+  /* recovery check-in: tap a number; tap it again to clear */
+  "ci-set": (el) => {
+    const key = keyOf(new Date()), f = el.dataset.f, v = Number(el.dataset.v);
+    leaveDemo();
+    const manual = { ...(state.raw[key]?.manual || {}) };
+    const ci = { ...(manual.checkin || {}) };
+    if (ci[f] === v) delete ci[f]; else ci[f] = v;
+    if (Object.keys(ci).length) manual.checkin = ci; else delete manual.checkin;
+    setDay(key, manual);
+    commit(() => api.patchDay(key, { checkin: Object.keys(ci).length ? ci : null }));
+    return false;
+  },
   /* forecast */
   "fc-view": (el) => { ui.fcView = el.dataset.v; },
   "fc-span": (el) => { ui.fcSpan = Number(el.dataset.v); },

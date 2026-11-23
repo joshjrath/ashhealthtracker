@@ -751,3 +751,71 @@ export function forecastChart(d, { width, height = 300, fmtDay }) {
     ${bt ? `<path class="fc-bt" d="${bt}"/>` : ""}${avg ? `<path class="fc-avg" d="${avg}"/>` : ""}${dots}${sc ? `<path class="fc-sc" d="${sc}"/>` : ""}${hits}
   </svg>`;
 }
+
+/** Resting HR and HRV, one small panel each: daily dots and the 7-day average line. */
+export function heartChart(rows, { width, fmtDay }) {
+  const W = Math.max(280, width), H = 120;
+  const panel = (field, label, unit, cls) => {
+    const pts = rows.map((r, i) => [i, r[field]]).filter((p) => p[1] != null);
+    if (pts.length < 5) return `<div class="nodata small">${label}: not enough readings from Apple Health yet.</div>`;
+    const P = { l: 40, r: 10, t: 16, b: 18 };
+    const iw = W - P.l - P.r, ih = H - P.t - P.b;
+    let lo = Math.min(...pts.map((p) => p[1])), hi = Math.max(...pts.map((p) => p[1]));
+    const pad = Math.max(1, (hi - lo) * 0.15); lo = Math.floor(lo - pad); hi = Math.ceil(hi + pad);
+    const x = (i) => P.l + (i / Math.max(1, rows.length - 1)) * iw;
+    const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+    const avg = rows.map((_, i) => { const w = rows.slice(Math.max(0, i - 6), i + 1).map((r) => r[field]).filter((v) => v != null); return w.length >= 3 ? [i, w.reduce((a, b) => a + b, 0) / w.length] : null; }).filter(Boolean);
+    const line = avg.map(([i, v], j) => `${j ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    const dots = pts.map(([i, v]) => `<circle class="hc-dot ${cls}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.6" ${tip(fmtDay(rows[i].key), `${label} ${Math.round(v)} ${unit}`)}/>`).join("");
+    return `<svg class="plot heart" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${label} over time">
+      <text class="axis" x="${P.l}" y="11">${label} (${unit})</text>
+      <line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(hi).toFixed(1)}" y2="${y(hi).toFixed(1)}"/><line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(lo).toFixed(1)}" y2="${y(lo).toFixed(1)}"/>
+      <text class="axis" x="${P.l - 6}" y="${(y(hi) + 4).toFixed(1)}" text-anchor="end">${hi}</text><text class="axis" x="${P.l - 6}" y="${(y(lo) + 4).toFixed(1)}" text-anchor="end">${lo}</text>
+      <text class="axis" x="${P.l}" y="${H - 4}">${esc(fmtDay(rows[0].key, true))}</text><text class="axis" x="${W - P.r}" y="${H - 4}" text-anchor="end">${esc(fmtDay(rows.at(-1).key, true))}</text>
+      ${dots}${line ? `<path class="hc-line ${cls}" d="${line}"/>` : ""}</svg>`;
+  };
+  return panel("rhr", "Resting HR", "bpm", "rhr") + panel("hrv", "HRV", "ms", "hrv");
+}
+
+/** Weekly training load (bars) with average sleep (line, right axis). */
+export function loadSleepChart(rows, { width, height = 220, fmtDay }) {
+  const P = { l: 40, r: 40, t: 14, b: 28 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  if (!rows.some((r) => r.load > 0)) return `<div class="nodata">No training logged in these weeks.</div>`;
+  const maxL = Math.max(...rows.map((r) => r.load)) * 1.1 || 1;
+  const sl = rows.map((r) => r.sleep).filter((v) => v != null);
+  const slo = sl.length ? Math.floor(Math.min(...sl) - 0.5) : 5, shi = sl.length ? Math.ceil(Math.max(...sl) + 0.5) : 9;
+  const bw = iw / rows.length;
+  const y = (v) => P.t + ih - (v / maxL) * ih;
+  const ys = (v) => P.t + ((shi - v) / (shi - slo || 1)) * ih;
+  const bars = rows.map((r, i) => `<g class="hit" ${tip(`Week to ${fmtDay(r.key)}`, `Load ${Math.round(r.load)} (sets × 3 + other minutes)`, r.sleep != null ? `Sleep ${r.sleep.toFixed(1)} h a night` : "Sleep not logged")}>
+      <rect class="ls-bar" x="${(P.l + i * bw + bw * 0.18).toFixed(1)}" y="${y(r.load).toFixed(1)}" width="${(bw * 0.64).toFixed(1)}" height="${Math.max(0, P.t + ih - y(r.load)).toFixed(1)}" rx="4"/></g>`).join("");
+  const line = rows.map((r, i) => [i, r.sleep]).filter((p) => p[1] != null).map(([i, v], j) => `${j ? "L" : "M"}${(P.l + i * bw + bw / 2).toFixed(1)},${ys(v).toFixed(1)}`).join("");
+  const sdots = rows.map((r, i) => (r.sleep == null ? "" : `<circle class="ls-dot" cx="${(P.l + i * bw + bw / 2).toFixed(1)}" cy="${ys(r.sleep).toFixed(1)}" r="3"/>`)).join("");
+  const xl = rows.map((r, i) => (i % 2 === rows.length % 2 ? "" : `<text class="axis" x="${(P.l + i * bw + bw / 2).toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(r.key, true))}</text>`)).join("");
+  return `<svg class="plot loadsleep" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Weekly training load with average sleep">
+    <line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${P.t + ih}" y2="${P.t + ih}"/>
+    <text class="axis" x="${P.l - 6}" y="${(P.t + 8).toFixed(1)}" text-anchor="end">load</text>
+    <text class="axis" x="${W - P.r + 6}" y="${(ys(shi) + 4).toFixed(1)}">${shi} h</text><text class="axis" x="${W - P.r + 6}" y="${(ys(slo) + 4).toFixed(1)}">${slo} h</text>
+    ${bars}${line ? `<path class="ls-line" d="${line}"/>` : ""}${sdots}${xl}</svg>`;
+}
+
+/** Sleep the night before (x, hours) against session performance (y, % vs recent level). */
+export function sleepPerfChart(points, { width, height = 220, fmtDay }) {
+  const P = { l: 44, r: 14, t: 14, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  if (points.length < 6) return `<div class="nodata">Needs at least 6 lifting sessions with the night before's sleep logged (${points.length} so far).</div>`;
+  const xs = points.map((p) => p.sleep / 60), ys = points.map((p) => p.perf);
+  const xlo = Math.floor(Math.min(...xs) - 0.25), xhi = Math.ceil(Math.max(...xs) + 0.25);
+  const lim = Math.max(4, Math.ceil(Math.max(...ys.map(Math.abs)) + 1));
+  const x = (v) => P.l + ((v - xlo) / (xhi - xlo || 1)) * iw;
+  const y = (v) => P.t + ((lim - v) / (2 * lim)) * ih;
+  let grid = `<line class="grid mid" x1="${P.l}" x2="${W - P.r}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`;
+  for (const v of [-lim, lim]) grid += `<text class="axis" x="${P.l - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v > 0 ? "+" : ""}${v}%</text>`;
+  grid += `<text class="axis" x="${P.l - 6}" y="${(y(0) + 4).toFixed(1)}" text-anchor="end">0</text>`;
+  for (let h = xlo; h <= xhi; h++) grid += `<text class="axis" x="${x(h).toFixed(1)}" y="${height - 8}" text-anchor="middle">${h} h</text>`;
+  const dots = points.map((p) => `<circle class="sp-dot" cx="${x(p.sleep / 60).toFixed(1)}" cy="${y(Math.max(-lim, Math.min(lim, p.perf))).toFixed(1)}" r="4" ${tip(fmtDay(p.key), `Slept ${(p.sleep / 60).toFixed(1)} h the night before`, `${p.perf >= 0 ? "+" : ""}${p.perf.toFixed(1)}% vs recent level (${p.n} lift${p.n === 1 ? "" : "s"})`)}/>`).join("");
+  return `<svg class="plot sleepperf" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Sleep before each session against how the session went">${grid}${dots}</svg>`;
+}

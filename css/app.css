@@ -1659,7 +1659,7 @@ aside .bell.on .bellcount { background: #101012; color: var(--salmon); }
 .pagesec-h { font-family: var(--display); font-size: 22px; font-weight: 800; letter-spacing: -0.02em; margin: 0; }
 .fgrid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; }
 @media (max-width: 860px) { .fgrid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.fgrid em { font-style: normal; font-size: 12px; color: var(--ink3); line-height: 1.35; }
+.ekpis em, .fgrid.three em { font-style: normal; font-size: 12px; color: var(--ink3); line-height: 1.35; }
 .bctarget { margin: 14px 0 4px; padding: 14px 16px; border-radius: 16px; background: var(--sunk); }
 .bct-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; align-items: baseline; font-size: 13px; color: var(--ink2); }
 .bct-bar { position: relative; height: 10px; border-radius: 5px; background: #1B1B20; margin: 12px 0 6px; }
@@ -1693,14 +1693,14 @@ aside .bell.on .bellcount { background: #101012; color: var(--salmon); }
 .plot.measure .ms-pt { fill: #F2A79C; stroke: #18181C; stroke-width: 2; }
 .plot.measure .ewline { fill: none; stroke: #94949E; stroke-width: 1.5; stroke-dasharray: 4 4; opacity: .8; }
 .mtable { display: flex; flex-direction: column; gap: 4px; margin: 14px 0 6px; }
-.mrow { display: grid; grid-template-columns: 96px repeat(3, minmax(0, 1fr)); gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 10px; background: var(--sunk); font-size: 13px; }
-.mrow.mhead { background: none; padding-top: 0; padding-bottom: 0; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; color: var(--ink3); }
-.mrow > span { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; min-width: 0; }
-.mrow em { font-style: normal; color: var(--ink3); font-size: 11.5px; }
-.mrow .ml2 { color: var(--ink2); }
-.mrow b.dn { color: #8FE3B8; } .mrow b.up { color: #F6B1A5; }
-.mrow .noise { color: var(--ink3); }
-@media (max-width: 560px) { .mrow { grid-template-columns: 66px repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 12px; } }
+.mtable .mrow { display: grid; grid-template-columns: 96px repeat(3, minmax(0, 1fr)); gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 10px; background: var(--sunk); font-size: 13px; }
+.mtable .mrow.mhead { background: none; padding-top: 0; padding-bottom: 0; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; color: var(--ink3); }
+.mtable .mrow > span { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; min-width: 0; }
+.mtable .mrow em { font-style: normal; color: var(--ink3); font-size: 11.5px; }
+.mtable .mrow .ml2 { color: var(--ink2); }
+.mtable .mrow b.dn { color: #8FE3B8; } .mtable .mrow b.up { color: #F6B1A5; }
+.mtable .mrow .noise { color: var(--ink3); }
+@media (max-width: 560px) { .mtable .mrow { grid-template-columns: 66px repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 12px; } }
 .mtips { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink2); line-height: 1.5; display: flex; flex-direction: column; gap: 4px; }
 .fhint { display: block; margin-top: 3px; font-size: 11px; color: var(--ink3); }
 #paneldlg form h3 { margin: 8px 0 0; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); }
@@ -1814,3 +1814,37 @@ aside .bell.on .bellcount { background: #101012; color: var(--salmon); }
 .card.fcstatus h2.fcs-word { font-size: 34px; margin: 0; }
 @media (max-width: 520px) { .card.fcstatus h2.fcs-word { font-size: 27px; } }
 .btn[hidden], .linkbtn[hidden] { display: none !important; }
+
+/* ── recovery & readiness ───────────────────────────────────────────────── */
+.recov-today .rt-why { margin: 2px 0 6px; font-size: 14px; color: var(--ink2); line-height: 1.45; }
+.recov-today .rt-do { margin: 0 0 10px; font-size: 14px; line-height: 1.45; }
+.recov-today .rt-ci { margin-bottom: 8px; }
+.cin { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px 22px; margin-top: 10px; }
+.cin-row { display: grid; grid-template-columns: 82px auto minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px; }
+.cin-l { color: var(--ink2); }
+.cin-b { display: flex; gap: 4px; }
+.cin-v { width: 32px; height: 32px; border-radius: 9px; border: 0; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; background: #26262C; color: var(--ink2); }
+.cin-v:hover { background: #303038; color: var(--ink); }
+.cin-v.on { background: #56C990; color: #0B0B0D; }
+.cin-v.on.hi-bad, .cin-v.on.lo-bad { background: #EE9A55; }
+.cin-w { font-size: 11.5px; color: var(--ink3); }
+.radvice { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+.radvice p { margin: 0; padding: 11px 14px; border-radius: 14px; background: var(--sunk); font-size: 14px; line-height: 1.45; }
+.radvice p.good { box-shadow: inset 3px 0 0 #56C990; } .radvice p.watch { box-shadow: inset 3px 0 0 #EE9A55; } .radvice p.info { box-shadow: inset 3px 0 0 #6B6B75; }
+.rsigs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 4px 22px; }
+.rsig-g .snotes { margin-top: 8px; }
+.rstrip { display: grid; grid-template-columns: repeat(28, minmax(0, 1fr)); gap: 3px; margin: 6px 0 2px; }
+.rs { height: 22px; border-radius: 5px; background: #26262C; }
+.rs.ok { background: rgba(86,201,144,.55); } .rs.mid { background: rgba(243,233,108,.5); } .rs.bad { background: rgba(238,154,85,.65); } .rs.none { background: #2A2A31; }
+.rs.today { box-shadow: 0 0 0 1.5px #EDEDF2; }
+.legend .lg-sq.rs { height: 10px; }
+.rcharts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 6px; }
+@media (max-width: 860px) { .rcharts { grid-template-columns: 1fr; } }
+.rci-full { margin-top: 10px; }
+.plot.heart .hc-dot.rhr { fill: #F25C7A; opacity: .5; } .plot.heart .hc-dot.hrv { fill: #62D6C4; opacity: .5; }
+.plot.heart .hc-line { fill: none; stroke-width: 2; } .plot.heart .hc-line.rhr { stroke: #F25C7A; } .plot.heart .hc-line.hrv { stroke: #62D6C4; }
+.plot.loadsleep .ls-bar { fill: rgba(157,140,245,.5); } .plot.loadsleep .hit:hover .ls-bar { fill: rgba(157,140,245,.75); }
+.plot.loadsleep .ls-line { fill: none; stroke: #F3E96C; stroke-width: 2; } .plot.loadsleep .ls-dot { fill: #F3E96C; stroke: #18181C; stroke-width: 2; }
+.plot.sleepperf .sp-dot { fill: #9D8CF5; opacity: .75; stroke: #18181C; stroke-width: 1.5; }
+.nodata.small { font-size: 12.5px; padding: 12px; }
+@media (max-width: 520px) { .cin-row { grid-template-columns: 74px auto; } .cin-w { display: none; } .rstrip { gap: 2px; } }

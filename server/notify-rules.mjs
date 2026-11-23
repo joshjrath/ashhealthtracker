@@ -14,10 +14,11 @@
    Adding a rule: push an object { id, category, run(ctx, n) } onto RULES —
    or, from a feature, call notifier.emit() directly with its own `type`.
    Planned features hook in the same way: weekly reports ("insights.report"),
-   the daily briefing ("insights.briefing"), readiness ("recovery.readiness"),
+   the daily briefing ("insights.briefing"),
    nutrient gaps ("nutrition.micros"), custom challenges
    ("achievements.challenge") and phase transitions ("phases.transition").
-   Strength trends are live: "fitness.decline" and "fitness.ready".
+   Strength trends are live: "fitness.decline" and "fitness.ready"; and
+   readiness: "recovery.readiness".
    ────────────────────────────────────────────────────────────────────────── */
 import { DEFAULT_GOALS, addDays, range, foodStatus, sleepMinutes, mondayOf, fmtDur } from "../js/metrics.js";
 import { resolveDay, reviewItems } from "../js/sources.js";
@@ -25,6 +26,7 @@ import { evaluate, buildCatalog } from "../js/achievements.js";
 import { plannedFor, weekStatus, liftHistory, PLAN_LABELS } from "../js/training.js";
 import { adaptiveTdee, plateau, calorieAdvice, weightTrend, intakeSummary } from "../js/energy.js";
 import { strengthAnalysis } from "../js/liftstats.js";
+import { readiness, readinessAdvice } from "../js/readiness.js";
 import { hm, localNow } from "./notify.mjs";
 
 const H = 3600_000;
@@ -247,6 +249,18 @@ export const RULES = [
   },
 
   /* ── sleep & recovery ── */
+  {
+    // Only when several sustained signals agree — never from one morning.
+    id: "recovery.readiness", category: "recovery",
+    run({ days, g, today, strength, energy }, n) {
+      if (!strength) return;
+      const r = readiness({ days, g, today, strengthStatus: strength.status, proteinGkg: strength.preservation?.protein ?? null, lossPct: strength.preservation?.weightPct != null ? -strength.preservation.weightPct : null, deficitPct: strength.preservation?.deficit != null && energy ? (strength.preservation.deficit / energy.estimate) * 100 : null });
+      const key = `rec:ready:${today}`;
+      if (r.status !== "recover") return n.cancel(key);
+      const why = r.signals.filter((x) => x.level === "strong").map((x) => x.text.split(" — ")[0].replace(/\.$/, "")).slice(0, 2);
+      n.emit({ type: "recovery.readiness", category: "recovery", priority: "important", key, minGapH: 48, title: "Recovery recommended today", body: `${why.join("; ")}. ${readinessAdvice(r, { strengthStatus: strength.status })[0]?.text || ""}`.trim(), link: "#/fitness" });
+    },
+  },
   {
     id: "recovery.sleep", category: "recovery",
     run({ days, today, g }, n) {
