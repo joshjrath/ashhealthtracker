@@ -82,6 +82,7 @@ const ui = {
   heatWeek: 0, calMonth: 0, fitWeek: 0, demoHidden: false, foodDay: null, libTab: "recent", histDays: 14, sheetTab: "recent",
 };
 let sessionUi = {};
+try { const v = Number(localStorage.getItem("ash-health-advice-dismissed")); if (Number.isFinite(v) && v > 0) ui.adviceDismissed = v; } catch { /* fine */ }
 try { sessionUi = JSON.parse(sessionStorage.getItem(UI_KEY) || "{}") || {}; } catch { /* fresh */ }
 Object.assign(ui, sessionUi, { heatWeek: 0, calMonth: 0, fitWeek: 0, foodDay: null, histDays: 14 });
 const keepUi = () => {
@@ -576,6 +577,21 @@ const ACTS = {
     const v = Number(el.dataset.v);
     liftDay(v === 0 ? keyOf(new Date()) : addDays(liftDraft.key, v));
     return false;
+  },
+  /* energy balance */
+  "advice-accept": (el) => {
+    const t = Number(el.dataset.v);
+    const half = Math.max(50, Math.round((state.goals.kcalHigh - state.goals.kcalLow) / 2 / 25) * 25);
+    if (!confirm(`Set your daily calorie target to ${t.toLocaleString("en-US")} kcal (range ${(t - half).toLocaleString("en-US")}–${(t + half).toLocaleString("en-US")})?`)) return false;
+    state.goals = { ...state.goals, kcalTarget: t, kcalLow: t - half, kcalHigh: t + half };
+    const { plan, ...send } = state.goals;
+    commit(() => api.putGoals(send)).then(() => toast(`Calorie target set to ${t.toLocaleString("en-US")} kcal`));
+    return false;
+  },
+  "advice-dismiss": (el) => {
+    ui.adviceDismissed = Number(el.dataset.v);
+    try { localStorage.setItem("ash-health-advice-dismissed", String(ui.adviceDismissed)); } catch { /* this browser only */ }
+    toast("Kept your current target. It'll only suggest again if the numbers change meaningfully.");
   },
   /* notifications */
   "notif-filter": (el) => { ui.notifFilter = el.dataset.v; },

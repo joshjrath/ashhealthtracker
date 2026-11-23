@@ -47,9 +47,9 @@ export async function buildContext({ store, cfg, storage, settings, at }) {
   let energy = null, plat = null, advice = null;
   if (hasData) {
     energy = adaptiveTdee(days, g, today);
-    plat = plateau(days, g, today, energy, "cut");
+    plat = plateau(days, g, today, energy, g.phase || "cut");
     const w = plat.t28?.now ?? plat.nowAvg ?? null;
-    advice = w ? calorieAdvice({ days, g, today, energy, plat, phase: "cut", weight: w }) : null;
+    advice = w ? calorieAdvice({ days, g, today, energy, plat, phase: g.phase || "cut", weight: w }) : null;
   }
   const ach = hasData ? evaluate({ days, g, today, catalog: buildCatalog(catalog, tiers), rewards: rewards || [] }) : null;
   return { local, today, min: local.minutes, days, raw, g, energy, plat, advice, ach, lastSync, cfg, storage, settings, at, hasData };
@@ -185,8 +185,8 @@ export const RULES = [
 
   /* ── insights & targets ── */
   {
-    // Off until the Metabolism & Energy Balance card exists to show and explain it.
-    id: "insights.tdee", category: "insights", prime: true, enabled: false,
+    // Shown and explained on the Weight page's Metabolism & energy balance card.
+    id: "insights.tdee", category: "insights", prime: true,
     run({ energy, seen }, n) {
       if (!energy || energy.confidence === "preliminary") return;
       const last = Number(seen("ins:tdee")?.fp);
@@ -195,11 +195,11 @@ export const RULES = [
     },
   },
   {
-    // Off until that card exists to accept or decline it on.
-    id: "insights.advice", category: "insights", enabled: false,
+    // Accepted or declined on that card; nothing changes from here.
+    id: "insights.advice", category: "insights",
     run({ advice }, n) {
       if (!advice?.suggest) return;
-      n.emit({ type: "insights.calorieTarget", category: "insights", priority: "important", key: "ins:advice", fp: advice.target, minGapH: 72, title: `Suggested calorie target: ${fmt(advice.target)} kcal`, body: `${advice.diff > 0 ? "Up" : "Down"} ${fmt(Math.abs(advice.diff))} from your current ${fmt(advice.current)}. Nothing changes unless you accept it on the Weight page.`, link: "#/weight" });
+      n.emit({ type: "insights.calorieTarget", category: "insights", priority: "important", key: "ins:advice", fp: Math.round(advice.target / 100) * 100, minGapH: 72, title: `Suggested calorie target: ${fmt(advice.target)} kcal`, body: `${advice.diff > 0 ? "Up" : "Down"} ${fmt(Math.abs(advice.diff))} from your current ${fmt(advice.current)}. Nothing changes unless you accept it on the Weight page.`, link: "#/weight" });
     },
   },
 

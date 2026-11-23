@@ -375,11 +375,11 @@ export function calorieAdvice({ days, g, today, energy, plat, phase = "cut", str
     pace = cutPace(bfPct, g.targetPace);
     if (strength?.status === "declining") { pace *= 0.75; cautions.push("Strength has been trending down — the suggestion uses a gentler deficit to protect training and muscle."); }
     lbPerWeek = weight ? (pace / 100) * weight : 1;
-    let deficit = (lbPerWeek * energy.perLb) / 7;
+    let deficit = (lbPerWeek * (energy.perLb || kcalPerLb(weight || 180, bfPct ?? 20))) / 7;
     deficit = Math.min(deficit, 0.25 * tdee);
     target = tdee - deficit;
     paceText = `about ${(Math.round(lbPerWeek * 10) / 10).toFixed(1)} lb/week (${pace.toFixed(2).replace(/0$/, "")}% of body weight)`;
-    reasons.push(`Estimated maintenance ${tdee.toLocaleString("en-US")} kcal minus a deficit for ${paceText}${g.targetPace ? "" : `, set by your body fat${bfPct != null ? ` (~${bfPct}%)` : ""} — slower as you get leaner`}.`);
+    reasons.push(`Estimated maintenance ${tdee.toLocaleString("en-US")} kcal minus a deficit for ${paceText}${g.targetPace ? " — the pace you chose" : bfPct != null ? `, set by your body fat (~${bfPct}%) — slower as you get leaner` : " — a moderate default; log your body fat and it tailors the pace"}.`);
     if (reached) cautions.push(`Your logged body fat (${bfPct}%) is at your target — consider switching to maintenance.`);
   } else if (phase === "maintain") {
     target = tdee;
@@ -406,6 +406,7 @@ export function calorieAdvice({ days, g, today, energy, plat, phase = "cut", str
     reasons.push("On a confirmed plateau the change is kept modest (at most 150 kcal) — reassess in 2–3 weeks.");
   }
   target = Math.round(target / 25) * 25;
+  if (target < floor) target = Math.ceil(floor / 25) * 25; // rounding never dips under the floor
 
   if (proteinGkg != null && proteinGkg < range[0]) cautions.push(`Protein is averaging ${proteinGkg.toFixed(1)} g/kg — below the ${range[0]}–${range[1]} g/kg that best supports keeping muscle in this phase (Morton 2018; Helms 2014). Raising it matters more than cutting calories.`);
   const half = Math.max(50, Math.round(((g.kcalHigh || current + 100) - (g.kcalLow || current - 100)) / 2 / 25) * 25);

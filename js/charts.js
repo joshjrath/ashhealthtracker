@@ -487,3 +487,56 @@ export function pacingChart(rows, { width, daily, color, fmtDay }) {
     <text class="axis" x="${W - P.r}" y="${(Number(ty) - 6).toFixed(1)}" text-anchor="end">${Math.round(daily).toLocaleString("en-US")} daily target</text>
     ${cols}</svg>`;
 }
+
+/* ── energy balance ────────────────────────────────────────────────────── */
+
+/**
+ * Weekly estimated maintenance (line, with its likely range as a band)
+ * against what you ate those weeks (dots — complete days only), and the
+ * weight trend on its own right-hand axis (dashed). The estimate is drawn
+ * as a band because it is one; intake and weight are what you logged.
+ */
+export function energyChart(weeks, { width, height = 280, fmtDay }) {
+  const P = { l: 52, r: 52, t: 16, b: 30 };
+  const W = Math.max(280, width);
+  const iw = W - P.l - P.r, ih = height - P.t - P.b;
+  const rows = weeks.filter((w) => w.estimate != null);
+  if (rows.length < 2) return `<div class="nodata">A few weeks of complete food logs and weigh-ins draw this chart.</div>`;
+  const kc = rows.flatMap((w) => [w.estimate - 1.28 * w.sd, w.estimate + 1.28 * w.sd, w.intake]).filter((v) => v != null);
+  let lo = Math.min(...kc), hi = Math.max(...kc);
+  const step = niceStep(hi - lo || 200, 5);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const wt = rows.map((w) => w.trend).filter((v) => v != null);
+  let wlo = Math.min(...wt), whi = Math.max(...wt);
+  if (wt.length) { const pad = Math.max(1, (whi - wlo) * 0.15); wlo = Math.floor(wlo - pad); whi = Math.ceil(whi + pad); }
+  const n = rows.length;
+  const x = (i) => P.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const y = (v) => P.t + ((hi - v) / (hi - lo)) * ih;
+  const yw = (v) => P.t + ((whi - v) / (whi - wlo || 1)) * ih;
+  let grid = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) {
+    grid += `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+      <text class="axis" x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${Math.round(v).toLocaleString("en-US")}</text>`;
+  }
+  if (wt.length) for (const v of [wlo, (wlo + whi) / 2, whi]) grid += `<text class="axis" x="${W - P.r + 8}" y="${(yw(v) + 4).toFixed(1)}">${Math.round(v)} lb</text>`;
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / 80))));
+  let xl = "";
+  rows.forEach((w, i) => { if ((n - 1 - i) % every === 0) xl += `<text class="axis" x="${x(i).toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(fmtDay(w.end, true))}</text>`; });
+  const band = rows.map((w, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(w.estimate + 1.28 * w.sd).toFixed(1)}`).join("")
+    + rows.map((w, i) => [i, w]).reverse().map(([i, w]) => `L${x(i).toFixed(1)},${y(w.estimate - 1.28 * w.sd).toFixed(1)}`).join("") + "Z";
+  const line = rows.map((w, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(w.estimate).toFixed(1)}`).join("");
+  let wline = "", pen = false;
+  rows.forEach((w, i) => { if (w.trend == null) { pen = false; return; } wline += `${pen ? "L" : "M"}${x(i).toFixed(1)},${yw(w.trend).toFixed(1)}`; pen = true; });
+  const dots = rows.map((w, i) => (w.intake == null ? "" : `<circle class="edot" cx="${x(i).toFixed(1)}" cy="${y(w.intake).toFixed(1)}" r="3.6"/>`)).join("");
+  const colw = iw / Math.max(1, n - 1);
+  const hits = rows.map((w, i) => `<g class="hit" ${tip(`Week to ${fmtDay(w.end)}`, `Estimated maintenance ${Math.round(w.estimate).toLocaleString("en-US")} kcal (±${Math.round(1.28 * w.sd)})`, w.intake != null ? `Ate ${Math.round(w.intake).toLocaleString("en-US")} kcal/day · ${w.intakeDays} complete day${w.intakeDays === 1 ? "" : "s"}` : "Too few complete food days", w.trend != null ? `Weight trend ${w.trend.toFixed(1)} lb` : "", w.obs != null ? `That window read ${Math.round(w.obs).toLocaleString("en-US")} kcal` : "Not enough data to calibrate this week")}>
+      <rect x="${(x(i) - colw / 2).toFixed(1)}" y="${P.t}" width="${Math.max(colw, 2).toFixed(1)}" height="${ih}" fill="transparent"/>
+      <line class="cross" x1="${x(i).toFixed(1)}" x2="${x(i).toFixed(1)}" y1="${P.t}" y2="${P.t + ih}"/></g>`).join("");
+  return `<svg class="plot energy" viewBox="0 0 ${W} ${height}" width="${W}" height="${height}" role="img" aria-label="Estimated maintenance calories by week, with intake and weight trend">
+    ${grid}${xl}
+    <path class="eband" d="${band}"/>
+    <path class="eline" d="${line}"/>
+    ${wline ? `<path class="ewline" d="${wline}"/>` : ""}
+    ${dots}${hits}
+  </svg>`;
+}

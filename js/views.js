@@ -15,7 +15,7 @@ import {
   workoutsIn, fitnessTotals, workoutStreak, weeklyReview, insights,
   fmtInt, fmt1, fmtK, fmtDur, fmtClock, ago,
 } from "./metrics.js";
-import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart } from "./charts.js";
+import { esc, tip, ring, sparkline, weightChart, trendChart, miniBars, sleepTimeline, concentric, workoutWeek, weekBars, shortType, pacingChart, energyChart } from "./charts.js";
 import { reviewItems } from "./sources.js";
 import { MEALS } from "./nutrition.js";
 import { WEEKDAYS, WEEKDAY_LABELS, PLAN_TYPES, PLAN_LABELS } from "./training.js";
@@ -26,6 +26,7 @@ import { strengthCard, setsText } from "./strength.js";
 import { DEFAULT_SUPPLEMENTS, currentSupps, pausedSupps, pausedOn, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
 import { sheetScript, sheetManifest } from "./sheetscript.js";
 import { notificationsPage, notificationsSection } from "./notifyview.js";
+import { metabolismCard, energyOf } from "./energyview.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -1501,7 +1502,8 @@ export const PAGES = {
     title: "Weight",
     render: (ctx) => `${pageHeader(ctx, "Weight", false)}${demoBanner(ctx)}
       ${weightJourney(ctx)}
-      <div class="grid wide-right">${goalJourney(ctx)}${weeklyWeightCard(ctx)}</div>`,
+      <div class="grid wide-right">${goalJourney(ctx)}${weeklyWeightCard(ctx)}</div>
+      ${metabolismCard(ctx)}`,
   },
   nutrition: {
     title: "Nutrition",
@@ -1556,6 +1558,7 @@ export const foodDay = (ctx) => (ctx.ui.foodDay && ctx.ui.foodDay <= ctx.today ?
 /* ── measured charts ───────────────────────────────────────────────────── */
 
 export const CHARTS = {
+  energy: (ctx, width) => energyChart(energyOf(ctx).energy.weeks.slice(-16), { width, fmtDay, height: width < 520 ? 240 : 280 }),
   pacing: (ctx, width) => pacingChart(pacingRows(ctx), { width, daily: ctx.g.kcalTarget, color: color("calories"), fmtDay }),
   weight: (ctx, width) => {
     const [a, b] = weightWindow(ctx);
