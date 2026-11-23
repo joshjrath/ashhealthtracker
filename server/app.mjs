@@ -69,6 +69,8 @@ import { createFoodLookup, USDA_SIGNUP } from "./food.mjs";
 import { createEstimator, AI_MODELS, DEFAULT_MODEL } from "./ai.mjs";
 import { createBackups, toExport, summarize } from "./backup.mjs";
 import { sheetTables } from "./sheet.mjs";
+import { createNotifier, CATEGORIES } from "./notify.mjs";
+import { runRules, RULES } from "./notify-rules.mjs";
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BODY = 40 * 1024 * 1024; // a 90-day per-sample export can run to tens of MB
@@ -114,7 +116,7 @@ const FOOD_KEYS = ["usdaKey", "anthropicKey", "fatsecretId", "fatsecretSecret"];
  */
 export async function createApp({
   store, root, password, secret, ingestToken, requireAuth, foodEnv = {}, fetch, makeClient,
-  storage = { persistent: true, where: store.kind }, version = "", now, backupSchedule = true,
+  storage = { persistent: true, where: store.kind }, version = "", now, backupSchedule = true, notifySchedule = true, pushFetch,
 }) {
   const sess = sessions(secret);
   const loginLimit = limiter(5, 60_000);
@@ -148,7 +150,9 @@ export async function createApp({
   // Before this version touches anything, back up what's there (skipped if
   // nothing changed since the last backup). A failed backup is reported but
   // doesn't keep the site down.
-  const backups = createBackups({ store, persistent: storage.persistent, version, ...(now ? { now } : {}) });
+  const notifier = createNotifier({ store, ...(now ? { now } : {}), ...(pushFetch ? { fetchImpl: pushFetch } : {}) });
+  const backupLog = { log: console.log, error: (...a) => { console.error(...a); notifier.event("backup-failed", { message: String(a.at(-1) ?? "unknown error").slice(0, 200) }); } };
+  const backups = createBackups({ store, persistent: storage.persistent, version, log: backupLog, ...(now ? { now } : {}) });
   try {
     const b = await backups.take(version ? `Before update ${version.slice(0, 7)} started` : "When the server started", { kind: "boot" });
     if (b.snapshot) console.log(`[backup] Backed up ${b.snapshot.summary.days} days before starting.`);
@@ -157,6 +161,25 @@ export async function createApp({
   }
   await migrate(store);
   if (backupSchedule) backups.start();
+
+  // Notifications: rules run every five minutes, and ~15 s after you log something.
+  const notifyBase = () => ({ store, cfg, storage, at: now ? now() : Date.now(), log: console });
+  let notifyRunning = null, soonTimer = null;
+  const checkNotifications = () => {
+    if (!notifyRunning) {
+      notifyRunning = runRules(notifier, notifyBase()).then(() => notifier.digest())
+        .catch((e) => console.error("[notify] check failed:", e.message))
+        .finally(() => { notifyRunning = null; });
+    }
+    return notifyRunning;
+  };
+  const soon = () => { if (!notifySchedule) return; clearTimeout(soonTimer); soonTimer = setTimeout(checkNotifications, 15_000); soonTimer.unref?.(); };
+  let notifyTimer = null;
+  let firstCheck = null;
+  if (notifySchedule) {
+    notifyTimer = setInterval(checkNotifications, 5 * 60_000); notifyTimer.unref?.();
+    firstCheck = setTimeout(checkNotifications, 20_000); firstCheck.unref?.();
+  }
   const epoch = () => cfg.auth?.epoch ?? 0;
   const hasPassword = () => !!(cfg.auth?.hash || password);
   const isOpen = () => !hasPassword() && !requireAuth; // local use with no password anywhere
@@ -245,6 +268,8 @@ export async function createApp({
       }
       if (!isExport(body?.backup)) return json(res, 400, { error: "That backup can't be read" });
       const r = await importDoc(body.backup, "Before restoring from your Google Sheet");
+      notifier.event("restored", { from: "your Google Sheet", days: r.days });
+      soon();
       const link = typeof body.link === "string" && /^[\w-]{20,200}$/.test(body.link) ? body.link : null;
       if (link && !cfg.backupLinks.some((l) => sameSecret(link, l.token, secret)) && cfg.backupLinks.length < 5) {
         cfg.backupLinks.push({ id: randomUUID(), name: "Google Sheet", token: link, createdAt: new Date().toISOString() });
@@ -266,10 +291,11 @@ export async function createApp({
       try {
         ({ days, report } = parseIngest(await readJson(req)));
       } catch (e) {
+        notifier.event("ingest-failed", { message: e.message });
         return json(res, e.status || 400, { error: e.message });
       }
       const keys = Object.keys(days).sort();
-      if (keys.length) await store.mergeApple(days);
+      if (keys.length) { await store.mergeApple(days); soon(); }
       await recordSeen(report);
       const source = /auto.?export/i.test(req.headers["user-agent"] || "") ? "Health Auto Export" : "Apple Health";
       const lastSync = {
@@ -293,6 +319,7 @@ export async function createApp({
         const form = new URLSearchParams(await readText(req, 10_000));
         if (!checkPassword(form.get("password"))) {
           loginLimit.fail(ip);
+          if (loginLimit.blocked(ip)) notifier.event("login-burst", { ip, hour: new Date().toISOString().slice(0, 13) });
           return send(res, 401, loginPage("That's not it."), "text/html; charset=utf-8");
         }
         res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
@@ -337,9 +364,11 @@ export async function createApp({
         achievements: { tiers: tiers || {}, catalog: catalog || [], ledger: ledger || { initializedAt: null, entries: {} } },
         lookup: { usda: k.usdaKey ? "key" : "demo", fatsecret: !!(k.fatsecretId && k.fatsecretSecret), off: k.offEnabled, ai: !!k.anthropicKey },
         backup: { persistent: storage.persistent, where: storage.where, everyHours: bst.everyHours, lastAt: bst.lastAt, count: bst.count, recovery },
+        notify: { unread: (await notifier.list()).unread },
       });
     }
     if (path.startsWith("/api/backups")) return backupApi(req, res, method, path);
+    if (path.startsWith("/api/notifications") || path.startsWith("/api/push")) return notifyApi(req, res, method, path);
     if (path.startsWith("/api/settings") || path.startsWith("/api/tokens") || path.startsWith("/api/backup-links") || path.startsWith("/api/prefs")
       || path === "/api/password" || path === "/api/sessions/revoke" || path.startsWith("/api/food-apis")) {
       return settingsApi(req, res, method, path);
@@ -362,10 +391,12 @@ export async function createApp({
           await countUses(prev.foods, next.foods);
           return next;
         });
+        soon();
         return json(res, 200, { ok: true, manual });
       }
       if (method === "DELETE") {
         await withLock(key, () => store.putManual(key, {}));
+        soon();
         return json(res, 200, { ok: true });
       }
     }
@@ -441,12 +472,16 @@ export async function createApp({
     if (path === "/api/goals" && method === "PUT") {
       const goals = cleanGoals(keepSupplements(await readJson(req), await store.getMeta("goals")));
       await store.setMeta("goals", goals);
+      soon();
       return json(res, 200, { ok: true, goals });
     }
     if (path === "/api/import" && method === "POST") {
       const body = await readJson(req);
       if (!isExport(body)) return json(res, 400, { error: "Not an Ash Health export" });
-      return json(res, 200, { ok: true, ...(await importDoc(body, "Before importing a file")) });
+      const r = await importDoc(body, "Before importing a file");
+      notifier.event("restored", { from: "an imported file", days: r.days });
+      soon();
+      return json(res, 200, { ok: true, ...r });
     }
     if (path === "/api/review" && method === "GET") {
       return json(res, 200, { items: reviewItems((await store.getAll()).days) });
@@ -465,6 +500,29 @@ export async function createApp({
       }
       return json(res, 200, { ok: true, done, items: reviewItems((await store.getAll()).days) });
     }
+    return json(res, 404, { error: "Not found" });
+  }
+
+  async function notifyApi(req, res, method, path) {
+    const ids = (b) => (b?.ids === "all" || b?.ids === "read" ? b.ids : Array.isArray(b?.ids) ? b.ids.map(String).slice(0, 300) : []);
+    if (path === "/api/notifications" && method === "GET") return json(res, 200, await notifier.list());
+    if (path === "/api/notifications/read" && method === "POST") { await notifier.read(ids(await readJson(req))); return json(res, 200, await notifier.list()); }
+    if (path === "/api/notifications/dismiss" && method === "POST") { await notifier.dismiss(ids(await readJson(req))); return json(res, 200, await notifier.list()); }
+    if (path === "/api/notifications/check" && method === "POST") { await checkNotifications(); return json(res, 200, await notifier.list()); }
+    if (path === "/api/notifications/settings" && method === "GET") {
+      return json(res, 200, { settings: await notifier.settings(), categories: CATEGORIES, rules: RULES.map((r) => ({ id: r.id, category: r.category })), push: await notifier.pushInfo(), email: false });
+    }
+    if (path === "/api/notifications/settings" && method === "PUT") {
+      const s = await notifier.saveSettings(await readJson(req));
+      soon();
+      return json(res, 200, { ok: true, settings: s });
+    }
+    if (path === "/api/push/subscribe" && method === "POST") {
+      const n = await notifier.subscribe((await readJson(req))?.subscription, req.headers["user-agent"]);
+      return json(res, 200, { ok: true, devices: n });
+    }
+    if (path === "/api/push/unsubscribe" && method === "POST") { await notifier.unsubscribe((await readJson(req))?.endpoint); return json(res, 200, { ok: true }); }
+    if (path === "/api/push/test" && method === "POST") return json(res, 200, { ok: true, ...(await notifier.test()) });
     return json(res, 404, { error: "Not found" });
   }
 
@@ -607,6 +665,7 @@ export async function createApp({
       const l = { id: randomUUID(), name: String(body?.name ?? "").trim().slice(0, 60) || "iCloud Drive", token: newToken(), createdAt: new Date().toISOString() };
       cfg.backupLinks.push(l);
       await store.setMeta("backupLinks", cfg.backupLinks);
+      notifier.event("backup-link-created", { id: l.id, name: l.name });
       return json(res, 200, { ok: true, ...view(l), token: l.token });
     }
     const lm = path.match(/^\/api\/backup-links\/([\w-]+)$/);
@@ -626,6 +685,7 @@ export async function createApp({
       const t = { id: randomUUID(), name: cleanName(body?.name), token: newToken(), createdAt: new Date().toISOString() };
       cfg.tokens.push(t);
       await saveTokens();
+      notifier.event("token-created", { id: t.id, name: t.name });
       return json(res, 200, { ok: true, ...view(t), token: t.token });
     }
     const tm = path.match(/^\/api\/tokens\/([\w-]+)(\/rotate)?$/);
@@ -649,6 +709,7 @@ export async function createApp({
       if (!tm[2] && method === "DELETE") {
         cfg.tokens = cfg.tokens.filter((x) => x !== t);
         await saveTokens();
+        notifier.event("token-deleted", { id: t.id, name: t.name });
         return json(res, 200, { ok: true });
       }
     }
@@ -665,11 +726,13 @@ export async function createApp({
       await saveAuth({ ...hashPassword(next), epoch: epoch() + 1, updatedAt: new Date().toISOString() });
       // Every other device is signed out; this one gets a fresh cookie.
       res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
+      notifier.event("password-changed");
       return json(res, 200, { ok: true });
     }
     if (path === "/api/sessions/revoke" && method === "POST") {
       await saveAuth({ ...(cfg.auth || {}), epoch: epoch() + 1 });
       res.setHeader("set-cookie", cookie(req, sess.issue(epoch()), TTL_SECONDS));
+      notifier.event("sessions-revoked");
       return json(res, 200, { ok: true });
     }
     return json(res, 404, { error: "Not found" });
@@ -678,7 +741,8 @@ export async function createApp({
   /** Only the page itself, its stylesheet and its scripts — never the server's own files. */
   async function serveStatic(res, path) {
     const rel = path === "/" ? "index.html" : decodeURIComponent(path).replace(/^\/+/, "");
-    const allowed = rel === "index.html" || /^(css|js)\/[\w.-]+\.(css|js)$/.test(rel);
+    // sw.js sits at the root so it can show push notifications for the whole site.
+    const allowed = rel === "index.html" || rel === "sw.js" || /^(css|js)\/[\w.-]+\.(css|js)$/.test(rel);
     const file = normalize(join(root, rel));
     if (!allowed || !file.startsWith(root + sep)) return send(res, 404, "Not found", "text/plain");
     try {
@@ -698,8 +762,10 @@ export async function createApp({
       else res.end();
     });
   });
-  server.on("close", () => backups.stop());
+  server.on("close", () => { backups.stop(); clearInterval(notifyTimer); clearTimeout(soonTimer); clearTimeout(firstCheck); });
   server.backups = backups;
+  server.notifier = notifier;
+  server.checkNotifications = checkNotifications;
   return server;
 }
 

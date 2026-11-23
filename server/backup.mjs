@@ -25,7 +25,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 
-export const DATA_META = ["goals", "prefs", "trainingPlan", "achievementTiers", "achievementCatalog", "achievementLedger", "lastSync", "fieldsSeen", "schema"];
+export const DATA_META = ["goals", "prefs", "trainingPlan", "achievementTiers", "achievementCatalog", "achievementLedger", "lastSync", "fieldsSeen", "schema", "notifySettings"];
 export const DATA_ITEMS = ["food", "meal", "reward"];
 export const EVERY_HOURS = [0, 1, 3, 6, 12, 24];
 export const DEFAULT_EVERY = 3;

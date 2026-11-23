@@ -82,6 +82,12 @@ To put everything back: in the sheet, **Ash Health → Restore a backup to the w
 
 `npm test` includes a check that restarting the server on the same storage — which is what an update does — leaves every day, food, meal, reward and setting exactly as it was.
 
+## Notifications
+
+One service (`server/notify.mjs`) handles every notification; features and the rules in `server/notify-rules.mjs` report through `emit({ type, category, priority, key, fp, … })`. It dedupes (same key + same content = nothing new), applies cooldowns and minimum gaps, keeps one live notification per key, holds digest topics and anything past your daily limit for a daily/weekly digest, skips reminders in quiet hours, and removes reminders that no longer apply (log a meal and "log your meals" disappears). Rules run every five minutes and shortly after anything is logged, in your time zone (sent by your browser). On first run, anything already true (old PRs, milestones passed long ago) is recorded silently.
+
+The bell in the sidebar opens the history; **Settings → Notifications** sets each topic to right away / daily digest / weekly digest / off, the optional reminders (meals, weigh-in, planned workout or rest day, bedtime — all off by default), quiet hours, digest time and daily limit. **Browser push** (Web Push: RFC 8291 encryption + RFC 8292 VAPID, checked against the RFC's worked example in tests) shows notifications while the site is closed, as long as the browser is running and you allowed it; on iPhone only for a home-screen web app. **Email isn't available** — there's no email service on the server.
+
 ## Deploy to Railway
 
 1. **New Project → Deploy from GitHub repo →** `ashhealthtracker`. Railway reads `railway.json`: it runs `npm start` and health-checks `/healthz`.
@@ -111,6 +117,11 @@ server/ai.mjs     AI nutrition estimates (Claude), labelled as estimates
 server/storage.mjs where the log lives, and whether it survives an update
 server/backup.mjs  automatic backups, rollback, retention
 server/sheet.mjs   your log as readable tables for the Google Sheet copy
+server/notify.mjs  notifications: dedupe, cooldowns, digests, quiet hours, push
+server/notify-rules.mjs  the rules that watch your data
+server/webpush.mjs Web Push encryption and VAPID, no third-party code
+js/energy.js      adaptive TDEE, weight trend, plateaus, calorie advice
+js/profile.js     about you: resting energy and body-fat formulas
 server/db.mjs     Postgres storage (days, meta, items, snapshots), or a JSON file without a DATABASE_URL
 server/auth.mjs   password hashing, signed session cookies, upload tokens, login rate limit
 index.html        shell: rail, log dialog, food sheet, panel dialog, tooltip
@@ -131,6 +142,7 @@ js/trophies.js    Next unlock, trophy room, badge details, rewards, the unlock m
 js/strength.js    the Strength card and the lift log (any day; moving or repeating a session)
 js/supplements.js the supplement list, daily check-offs and the Supplements goal
 js/recovery.js    this browser's recovery copy of your log
+js/notifyview.js  the Notifications page and Settings → Notifications
 js/sheetscript.js the Google Sheet's Apps Script (nightly copy, restore menu)
 js/app.js         routing, measured chart mounting, tooltip, dialogs, settings
 test/             node --test suites. On Postgres, one file at a time (they share the database):

@@ -19,6 +19,7 @@ import { cleanMeal, cleanReward, cleanFood, newId } from "./library.js";
 import { dayLabel } from "./diary.js";
 import { initFoodSheet, openAdd, openEntry, openLogFood, openFood, openMeal, openMealLog, openPlaceholder, closeSheet } from "./foodsheet.js";
 import { loadCopy, saveCopy, forgetCopy } from "./recovery.js";
+import { readNotifyForm, keyBytes } from "./notifyview.js";
 import { DEFAULT_SUPPLEMENTS, cleanSupplements, currentSupps, pausedSupps, pauseSupp, resumeSupp, shownOn, dueOn, taken, checkoff, applyCheckoff, suppLabel, suppId } from "./supplements.js";
 
 /*
@@ -39,7 +40,9 @@ let settingsInfo = null;
 const revealed = {};
 
 async function refresh() {
-  const [s, st] = await Promise.all([fetchState(), api.settings()]);
+  const [s, st, notifs, notifySettings] = await Promise.all([
+    fetchState(), api.settings(), api.notifications().catch(() => null), api.notifSettings().catch(() => null),
+  ]);
   const demo = !Object.keys(s.days).length && s.prefs?.showSample !== false;
   const sample = demo ? seed(keyOf(new Date())) : null;
   const raw = demo ? sample.days : s.days;
@@ -54,6 +57,15 @@ async function refresh() {
   };
   if (demo) state.achievements = { ...state.achievements, ledger: null }; // a sample ledger is made on first draw
   settingsInfo = st;
+  state.notifs = notifs;
+  state.notifySettings = notifySettings;
+  // Reminders and digests run on the server, so it needs your time zone.
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (notifySettings && tz && notifySettings.settings.timeZone !== tz) {
+    notifySettings.settings.timeZone = tz;
+    api.putNotifSettings({ timeZone: tz }).catch(() => {});
+  }
+  checkPushHere();
   // This browser's recovery copy: refreshed from real data, offered back if the log ever comes back empty.
   const empty = !Object.keys(s.days).length && !lib.foods.length && !lib.meals.length && !lib.rewards.length;
   if (!empty) await saveCopy(exportDoc());
@@ -118,8 +130,70 @@ function render() {
   mountCharts(c);
   animateJourney();
   syncPill();
+  syncBell(p);
   syncAchievements(p === "achievements" ? [] : unseenUnlocks(ach, ledgerNow()));
   if (panel) refreshPanel();
+}
+
+/* ── notifications: the bell, and this device's push ─────────────────── */
+
+function syncBell(p) {
+  const el = document.getElementById("bellcount");
+  const n = state.notifs?.unread || 0;
+  if (el) { el.hidden = !n; el.textContent = n > 99 ? "99+" : String(n); }
+  const bell = document.querySelector("aside .bell");
+  if (bell) bell.setAttribute("aria-label", n ? `Notifications, ${n} new` : "Notifications");
+  // Opening the page is reading them: they stay marked new for this visit.
+  if (p === "notifications" && n) {
+    const ids = state.notifs.items.filter((i) => !i.readAt).map((i) => i.id);
+    ui.notifFresh = new Set([...(ui.notifFresh || []), ...ids]);
+    for (const i of state.notifs.items) if (!i.readAt) i.readAt = new Date().toISOString();
+    state.notifs.unread = 0;
+    if (el) el.hidden = true;
+    api.notifRead(ids).catch(() => {});
+  } else if (p !== "notifications") ui.notifFresh = new Set();
+}
+
+async function pollNotifications() {
+  if (document.visibilityState !== "visible") return;
+  const n = await api.notifications().catch(() => null);
+  if (!n) return;
+  const changed = JSON.stringify(n.items.map((i) => i.id)) !== JSON.stringify((state.notifs?.items || []).map((i) => i.id));
+  state.notifs = n;
+  if (page() === "notifications" && changed) render();
+  else syncBell(page());
+}
+setInterval(pollNotifications, 120_000);
+
+/** Is this browser signed up for push? "on" · "off" · "denied" · "unsupported". */
+async function checkPushHere() {
+  let v = "unsupported";
+  try {
+    if ("serviceWorker" in navigator && "PushManager" in window && "Notification" in window) {
+      if (Notification.permission === "denied") v = "denied";
+      else {
+        const reg = await navigator.serviceWorker.getRegistration("/");
+        v = (await reg?.pushManager.getSubscription()) ? "on" : "off";
+      }
+    }
+  } catch { v = "unsupported"; }
+  if (ui.pushHere !== v) { ui.pushHere = v; if (page() === "settings") render(); }
+}
+
+async function pushOn() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error("This browser can't receive push notifications.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error(perm === "denied" ? "Notifications are blocked for this site — allow them in your browser's site settings." : "Permission wasn't given, so nothing changed.");
+  const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  await navigator.serviceWorker.ready;
+  const key = state.notifySettings?.push?.publicKey || (await api.notifSettings()).push.publicKey;
+  const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) }));
+  await api.pushSubscribe(sub.toJSON());
+}
+async function pushOff() {
+  const reg = await navigator.serviceWorker?.getRegistration("/");
+  const sub = await reg?.pushManager.getSubscription();
+  if (sub) { await api.pushUnsubscribe(sub.endpoint).catch(() => {}); await sub.unsubscribe(); }
 }
 
 /* ── achievements: the ledger, the sidebar count, the unlock moment ───── */
@@ -502,6 +576,31 @@ const ACTS = {
     const v = Number(el.dataset.v);
     liftDay(v === 0 ? keyOf(new Date()) : addDays(liftDraft.key, v));
     return false;
+  },
+  /* notifications */
+  "notif-filter": (el) => { ui.notifFilter = el.dataset.v; },
+  "notif-dismiss": (el) => { state.notifs.items = state.notifs.items.filter((i) => i.id !== el.dataset.v); api.notifDismiss([el.dataset.v]).then((n) => { state.notifs = n; }).catch(failed); },
+  "notif-clear": () => { state.notifs.items = state.notifs.items.filter((i) => !i.readAt || ui.notifFresh?.has(i.id)); api.notifDismiss("read").then(() => reload()).catch(failed); },
+  "notif-clear-all": () => {
+    if (!confirm("Dismiss every notification? They're removed from the list.")) return false;
+    state.notifs.items = [];
+    api.notifDismiss("all").then(() => reload()).catch(failed);
+  },
+  "notif-check": async (el) => {
+    el.disabled = true;
+    const n = await api.notifCheck().catch(failed);
+    if (n) { state.notifs = n; toast(n.unread ? `${n.unread} new` : "Nothing new"); }
+    render();
+  },
+  "notif-open": (el) => { location.hash = el.getAttribute("href"); return false; },
+  "push-on": async () => {
+    try { await pushOn(); toast("Notifications on for this device"); } catch (e) { alert(e.message); }
+    await checkPushHere(); await reload();
+  },
+  "push-off": async () => { await pushOff().catch(() => {}); toast("Turned off on this device"); await checkPushHere(); await reload(); },
+  "push-test": async () => {
+    const r = await api.pushTest().catch(failed);
+    if (r) toast(r.sent ? "Test sent — it should appear in a few seconds" : "No device took it — try turning notifications off and on again");
   },
   /* supplements */
   "supp-toggle": (el) => {
@@ -1179,6 +1278,11 @@ const FORMS = {
     state.achievements.tiers = r.tiers;
     render();
     flash("#sec-achievements", "Saved — progress recalculated");
+  },
+  notify(f) {
+    const next = readNotifyForm(f, state.notifySettings.settings);
+    state.notifySettings.settings = next;
+    commit(() => api.putNotifSettings(next)).then(() => flash("#sec-notifications", "Saved"));
   },
   supplements(f) {
     let list = suppEdits();

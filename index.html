@@ -15,7 +15,13 @@
 <div class="shell">
   <aside>
     <div class="inner">
-      <a class="mark" href="#/today">ash<span>/health</span></a>
+      <div class="brandrow">
+        <a class="mark" href="#/today">ash<span>/health</span></a>
+        <a class="bell" href="#/notifications" data-page="notifications" aria-label="Notifications" title="Notifications">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 13.5V9a4.5 4.5 0 0 1 9 0v4.5l1.5 1.5h-12zM8.5 17a1.6 1.6 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          <span class="bellcount" id="bellcount" hidden></span>
+        </a>
+      </div>
       <nav>
         <a href="#/today" data-page="today">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 3.5a6.5 6.5 0 0 1 6.5 6.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>Today</a>

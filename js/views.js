@@ -25,6 +25,7 @@ import { nextUnlockCard, achievementsPage } from "./trophies.js";
 import { strengthCard, setsText } from "./strength.js";
 import { DEFAULT_SUPPLEMENTS, currentSupps, pausedSupps, pausedOn, shownOn, dueOn, taken, suppCount, suppLabel } from "./supplements.js";
 import { sheetScript, sheetManifest } from "./sheetscript.js";
+import { notificationsPage, notificationsSection } from "./notifyview.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -946,6 +947,7 @@ const ICONS = {
   dumbbell: `<svg viewBox="0 0 20 20"><path d="M3 8v4M17 8v4M5.5 6v8M14.5 6v8M5.5 10h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   search: `<svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.8 12.8l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   shield: `<svg viewBox="0 0 20 20"><path d="M10 2.8l6 2.4v4.6c0 3.6-2.5 6.3-6 7.4-3.5-1.1-6-3.8-6-7.4V5.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.2 10l2 2 3.8-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  bell: `<svg viewBox="0 0 20 20"><path d="M5.5 13.5V9a4.5 4.5 0 0 1 9 0v4.5l1.5 1.5h-12zM8.5 17a1.6 1.6 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>`,
   pill: `<svg viewBox="0 0 20 20"><rect x="3.2" y="7" width="13.6" height="6" rx="3" transform="rotate(-35 10 10)" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.1 6.9l3.8 6.2" transform="rotate(0)" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   trophy: `<svg viewBox="0 0 20 20"><path d="M6 3.5h8v4a4 4 0 0 1-8 0zM6 5H3.5v1.2A2.8 2.8 0 0 0 6.3 9M14 5h2.5v1.2A2.8 2.8 0 0 1 13.7 9M10 11.5v3M7 16.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
@@ -961,8 +963,9 @@ const SECTIONS = {
   security: { title: "Sign-in & security", color: "#9D8CF5" },
   data: { title: "Your data", color: "#62D6C4" },
   backups: { title: "Backups & rollback", color: "#56C990" },
+  notifications: { title: "Notifications", color: "#F3E96C" },
 };
-const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", supplements: "pill", food: "search", achievements: "trophy", security: "lock", data: "data", backups: "shield" };
+const ICON_OF = { goals: "goals", apple: "apple", sources: "data", display: "sliders", training: "dumbbell", supplements: "pill", food: "search", achievements: "trophy", security: "lock", data: "data", backups: "shield", notifications: "bell" };
 
 function secHead(id, desc) {
   const s = SECTIONS[id];
@@ -1000,6 +1003,7 @@ function overview(ctx) {
     ["achievements", ctx.ach ? `${ctx.ach.unlockedCount} / ${ctx.ach.total} unlocked` : ""],
     ["display", `${ctx.ui.weightRange === "all" ? "All" : `${ctx.ui.weightRange}D`} weight · ${ctx.ui.trendRange}D trends`],
     ["security", pw],
+    ["notifications", (() => { const ns = ctx.state.notifySettings; if (!ns) return ""; const r = Object.values(ns.settings.reminders).filter((x) => x.on).length; return [`${Object.values(ns.settings.categories).filter((m) => m !== "off").length} topics on`, r ? `${r} reminder${r === 1 ? "" : "s"}` : "no reminders", ctx.ui.pushHere === "on" ? "this device on" : ""].filter(Boolean).join(" · "); })()],
     ["backups", !st.backups ? "" : !st.backups.persistent ? "⚠ Erased on every update" : [st.backups.everyHours ? `Every ${st.backups.everyHours}h` : "Automatic backups off", st.backupLinks?.length ? (st.backupLinks.some((l) => l.lastUsedAt) ? `Sheet ${ago(new Date(st.backupLinks.map((l) => l.lastUsedAt).filter(Boolean).sort().at(-1)))}` : "Sheet waiting") : "No sheet copy"].join(" · ")],
     ["data", `${n} day${n === 1 ? "" : "s"} stored`],
   ];
@@ -1473,6 +1477,7 @@ export function settings(ctx) {
     ${achievementsSection(ctx)}
     ${displaySection(ctx)}
     ${securitySection(ctx)}
+    ${notificationsSection(ctx, secHead)}
     ${backupsSection(ctx)}
     ${dataSection(ctx)}
     ${reviewSection(ctx)}
@@ -1533,6 +1538,10 @@ export const PAGES = {
   calendar: {
     title: "Calendar",
     render: (ctx) => `${pageHeader(ctx, "Calendar", false)}${demoBanner(ctx)}${calendar(ctx)}`,
+  },
+  notifications: {
+    title: "Notifications",
+    render: (ctx) => `${pageHeader(ctx, "Notifications", false)}${notificationsPage(ctx)}`,
   },
   settings: {
     title: "Settings",
